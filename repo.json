@@ -1,1 +1,25 @@
-[]
+[
+  {
+    "Author": "himuraizu-create",
+    "Name": "Ledge Jump",
+    "InternalName": "LedgeJump",
+    "AssemblyVersion": "0.1.0.1",
+    "Description": "Record the tip of a platform with /ledgejump add, then run at it. The plugin checks your position every frame and jumps at the recorded spot. Type /ledgejump for help.",
+    "Punchline": "Jumps at the exact edge of platforms you record.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/himuraizu-create/Ledge.Jump",
+    "Tags": [
+      "jump",
+      "parkour",
+      "utility"
+    ],
+    "DalamudApiLevel": 15,
+    "LoadPriority": 0,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/himuraizu-create/Ledge.Jump/releases/download/v0.1.0.1/latest.zip",
+    "DownloadLinkTesting": "https://github.com/himuraizu-create/Ledge.Jump/releases/download/v0.1.0.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/himuraizu-create/Ledge.Jump/releases/download/v0.1.0.1/latest.zip",
+    "LastUpdate": 1795300876
+  }
+]
