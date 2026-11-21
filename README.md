@@ -7,7 +7,7 @@ A Dalamud plugin that jumps at the exact edge of platforms you record. It checks
 1. In game, type `/xlsettings`, go to the **Experimental** tab.
 2. Under **Custom Plugin Repositories**, paste this link (replace the two names), then click **+** and **Save and Close**:
 
-   `https://raw.githubusercontent.com/YOUR_GITHUB_NAME/LedgeJump/main/repo.json`
+   `https://raw.githubusercontent.com/himuraizu-create/LedgeJump/main/repo.json`
 
 3. Type `/xlplugins`, search for **Ledge Jump**, and install it.
 
