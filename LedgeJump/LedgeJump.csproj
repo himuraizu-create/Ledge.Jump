@@ -1,0 +1,15 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <Version>0.1.0.0</Version>
+    <DalamudApiLevel>15</DalamudApiLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Shown in the in-game plugin installer (/xlplugins) -->
+    <Author>Izumi</Author>
+    <Name>Ledge Jump</Name>
+    <Punchline>Jumps at the exact edge of platforms you record.</Punchline>
+    <Description>Record the tip of a platform with /ledgejump add, then run at it. The plugin checks your position every frame and jumps at the recorded spot, for max-distance jumps from thin or odd platforms. Type /ledgejump for help.</Description>
+    <RepoUrl>https://github.com/himuraizu-create/LedgeJump</RepoUrl>
+    <Tags>jump;parkour;utility</Tags>
+  </PropertyGroup>
+</Project>
