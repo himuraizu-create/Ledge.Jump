@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Game.Command;
+using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -32,6 +33,9 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IPluginLog log;
 
     private readonly Configuration config;
+    private readonly EdgeDetector edgeDetector;
+    private readonly WindowSystem windowSystem = new("LedgeJump");
+    private readonly ConfigWindow configWindow;
     private readonly Stopwatch clock = Stopwatch.StartNew();
 
     private bool haveLast;
@@ -42,6 +46,12 @@ public sealed class Plugin : IDalamudPlugin
     // Near-miss tracking (per spot)
     private readonly Dictionary<Spot, float> closest = new();
     private readonly HashSet<Spot> jumpedThisVisit = new();
+
+    // Latest automatic-edge reading, shown live in the options window
+    internal EdgeResult LastEdge { get; private set; }
+    internal bool HaveEdgeReading { get; private set; }
+
+    internal uint CurrentTerritory => (uint)clientState.TerritoryType;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -61,10 +71,18 @@ public sealed class Plugin : IDalamudPlugin
         this.log = log;
 
         config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        edgeDetector = new EdgeDetector(config);
+
+        configWindow = new ConfigWindow(this, config, Save);
+        windowSystem.AddWindow(configWindow);
+
+        pluginInterface.UiBuilder.Draw += windowSystem.Draw;
+        pluginInterface.UiBuilder.OpenConfigUi += ToggleWindow;
+        pluginInterface.UiBuilder.OpenMainUi += ToggleWindow;
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Ledge Jump. Type /ledgejump for the list of commands.",
+            HelpMessage = "Ledge Jump. Opens the options window. Use /ledgejump help for chat commands.",
         });
 
         framework.Update += OnUpdate;
@@ -76,7 +94,14 @@ public sealed class Plugin : IDalamudPlugin
     {
         framework.Update -= OnUpdate;
         commandManager.RemoveHandler(CommandName);
+
+        pluginInterface.UiBuilder.Draw -= windowSystem.Draw;
+        pluginInterface.UiBuilder.OpenConfigUi -= ToggleWindow;
+        pluginInterface.UiBuilder.OpenMainUi -= ToggleWindow;
+        windowSystem.RemoveAllWindows();
     }
+
+    private void ToggleWindow() => configWindow.Toggle();
 
     // ------------------------------------------------------------------
     // Runs every frame
@@ -108,18 +133,50 @@ public sealed class Plugin : IDalamudPlugin
         last = pos;
         lastTime = now;
 
-        if (!config.Enabled || config.Spots.Count == 0)
+        var wantAuto = config.Enabled && config.UseAutoEdge;
+        var wantSpots = config.Enabled && config.UseSpots && config.Spots.Count > 0;
+        var wantReadout = configWindow.IsOpen;
+
+        if (!wantAuto && !wantSpots && !wantReadout)
             return;
 
         if (step > MaxStep)
             return;
 
-        var territory = (uint)clientState.TerritoryType;
-        var canJump = now >= cooldownUntil && step >= MinStep;
+        var canJump = config.Enabled && now >= cooldownUntil && step >= MinStep;
 
-        // Your direction of travel this frame
-        var ux = canJump ? dx / step : 0f;
-        var uz = canJump ? dz / step : 0f;
+        // Your direction of travel this frame (length 1). Only meaningful while you are moving.
+        var ux = step >= MinStep ? dx / step : 0f;
+        var uz = step >= MinStep ? dz / step : 0f;
+
+        // -------- Automatic edge detection (the game's collision) --------
+        if (step >= MinStep && (wantAuto || wantReadout))
+        {
+            var edge = edgeDetector.Evaluate(pos, ux, uz);
+            LastEdge = edge;
+            HaveEdgeReading = true;
+
+            // Jump when the point (edge - lead) will be passed before the next frame.
+            if (wantAuto && canJump && edge.Grounded && edge.HasEdge && !edge.WallAhead &&
+                edge.EdgeDistance - config.EdgeLead <= step * config.EdgeWiden)
+            {
+                var accepted = DoJump();
+                cooldownUntil = now + CooldownSeconds;
+                canJump = false;
+
+                if (config.Debug)
+                {
+                    Print($"AUTO JUMP | edge was {F(edge.EdgeDistance)} ahead | " +
+                          $"moved {F(step)} per frame | {dt * 1000:0} ms per frame | accepted: {accepted}");
+                }
+            }
+        }
+
+        // -------- Recorded spots --------
+        if (!wantSpots)
+            return;
+
+        var territory = CurrentTerritory;
 
         // The trigger window is at least ZoneRadius, and grows with your speed per frame
         var reach = MathF.Max(config.ZoneRadius, step * config.AutoWiden);
@@ -142,7 +199,7 @@ public sealed class Plugin : IDalamudPlugin
             else if (closest.TryGetValue(spot, out var finalBest))
             {
                 if (!jumpedThisVisit.Contains(spot) && config.Debug)
-                    Print($"No jump. Closest you got to the spot: {F(finalBest)}");
+                    Print($"No jump. Closest you got to \"{spot.Name}\": {F(finalBest)}");
                 closest.Remove(spot);
                 jumpedThisVisit.Remove(spot);
             }
@@ -162,7 +219,7 @@ public sealed class Plugin : IDalamudPlugin
 
                 if (config.Debug)
                 {
-                    Print($"JUMP | {F(along)} before the spot | {F(side)} off to the side | " +
+                    Print($"JUMP \"{spot.Name}\" | {F(along)} before the spot | {F(side)} off to the side | " +
                           $"moved {F(step)} per frame | {dt * 1000:0} ms per frame | accepted: {accepted}");
                 }
             }
@@ -182,15 +239,83 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // ------------------------------------------------------------------
+    // Things the options window calls
+    // ------------------------------------------------------------------
+    internal void TestJump() => Print($"Test jump sent. Game accepted it: {DoJump()}");
+
+    internal void AddSpot(string name)
+    {
+        var player = objectTable.LocalPlayer;
+        if (player == null)
+        {
+            Print("No character found.");
+            return;
+        }
+
+        var pos = player.Position;
+        var spot = new Spot
+        {
+            Name = string.IsNullOrWhiteSpace(name) ? $"Spot {config.Spots.Count + 1}" : name.Trim(),
+            Territory = CurrentTerritory,
+            X = pos.X,
+            Y = pos.Y,
+            Z = pos.Z,
+        };
+
+        config.Spots.Add(spot);
+        Save();
+        Print($"Added spot #{config.Spots.Count} \"{spot.Name}\" at x = {F(spot.X)}, z = {F(spot.Z)}. " +
+              "Now run at it and it will jump.");
+    }
+
+    internal void MoveSpotHere(int index)
+    {
+        var player = objectTable.LocalPlayer;
+        if (player == null || index < 0 || index >= config.Spots.Count)
+            return;
+
+        var pos = player.Position;
+        var spot = config.Spots[index];
+        spot.Territory = CurrentTerritory;
+        spot.X = pos.X;
+        spot.Y = pos.Y;
+        spot.Z = pos.Z;
+        closest.Remove(spot);
+        jumpedThisVisit.Remove(spot);
+        Save();
+        Print($"Spot \"{spot.Name}\" moved to x = {F(spot.X)}, z = {F(spot.Z)}.");
+    }
+
+    internal void RemoveSpotAt(int index)
+    {
+        if (index < 0 || index >= config.Spots.Count)
+            return;
+
+        var spot = config.Spots[index];
+        config.Spots.RemoveAt(index);
+        closest.Remove(spot);
+        jumpedThisVisit.Remove(spot);
+        Save();
+        Print($"Removed spot \"{spot.Name}\".");
+    }
+
+    // ------------------------------------------------------------------
     // Chat commands
     // ------------------------------------------------------------------
     private void OnCommand(string command, string args)
     {
         var parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var sub = parts.Length > 0 ? parts[0].ToLowerInvariant() : "help";
+        var sub = parts.Length > 0 ? parts[0].ToLowerInvariant() : "ui";
 
         switch (sub)
         {
+            case "ui":
+            case "config":
+            case "settings":
+            case "window":
+                configWindow.Toggle();
+                break;
+
             case "add":
                 AddSpot(string.Join(' ', parts.Skip(1)));
                 break;
@@ -201,7 +326,11 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             case "remove":
-                RemoveSpot(parts);
+                if (parts.Length < 2 || !int.TryParse(parts[1], out var number) ||
+                    number < 1 || number > config.Spots.Count)
+                    Print("Usage: /ledgejump remove <number>   (see the numbers with /ledgejump list)");
+                else
+                    RemoveSpotAt(number - 1);
                 break;
 
             case "clear":
@@ -230,22 +359,16 @@ public sealed class Plugin : IDalamudPlugin
                 Print(config.Enabled ? "Ledge Jump is ON." : "Ledge Jump is OFF.");
                 break;
 
-            case "radius":
-                SetNumber(parts, "radius", 0f, 3f, v => config.ZoneRadius = v, () => config.ZoneRadius);
-                break;
-
-            case "side":
-                SetNumber(parts, "side", 0.05f, 5f, v => config.SideLeeway = v, () => config.SideLeeway);
-                break;
-
-            case "widen":
-                SetNumber(parts, "widen", 1f, 5f, v => config.AutoWiden = v, () => config.AutoWiden);
+            case "auto":
+                config.UseAutoEdge = parts.Length > 1 ? parts[1].ToLowerInvariant() == "on" : !config.UseAutoEdge;
+                Save();
+                Print(config.UseAutoEdge ? "Automatic edge detection ON." : "Automatic edge detection OFF.");
                 break;
 
             case "debug":
                 config.Debug = parts.Length > 1 ? parts[1].ToLowerInvariant() == "on" : !config.Debug;
                 Save();
-                Print(config.Debug ? "Debug messages ON." : "Debug messages OFF.");
+                Print(config.Debug ? "Chat messages ON." : "Chat messages OFF.");
                 break;
 
             case "coords":
@@ -253,69 +376,13 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             case "test":
-                Print($"Test jump sent. Game accepted it: {DoJump()}");
+                TestJump();
                 break;
 
             default:
                 PrintHelp();
                 break;
         }
-    }
-
-    private void AddSpot(string name)
-    {
-        var player = objectTable.LocalPlayer;
-        if (player == null)
-        {
-            Print("No character found.");
-            return;
-        }
-
-        var pos = player.Position;
-        var spot = new Spot
-        {
-            Name = string.IsNullOrWhiteSpace(name) ? $"Spot {config.Spots.Count + 1}" : name,
-            Territory = (uint)clientState.TerritoryType,
-            X = pos.X,
-            Y = pos.Y,
-            Z = pos.Z,
-        };
-
-        config.Spots.Add(spot);
-        Save();
-        Print($"Added spot #{config.Spots.Count} \"{spot.Name}\" at x = {F(spot.X)}, z = {F(spot.Z)}. " +
-              "Now run at it and it will jump.");
-    }
-
-    private void RemoveSpot(string[] parts)
-    {
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var number) || number < 1 || number > config.Spots.Count)
-        {
-            Print("Usage: /ledgejump remove <number>   (see the numbers with /ledgejump list)");
-            return;
-        }
-
-        var spot = config.Spots[number - 1];
-        config.Spots.RemoveAt(number - 1);
-        closest.Remove(spot);
-        jumpedThisVisit.Remove(spot);
-        Save();
-        Print($"Removed spot #{number} \"{spot.Name}\".");
-    }
-
-    private void SetNumber(string[] parts, string label, float min, float max, Action<float> set, Func<float> get)
-    {
-        if (parts.Length < 2 ||
-            !float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-        {
-            Print($"{label} is currently {F(get())}. To change it: /ledgejump {label} <number>");
-            return;
-        }
-
-        value = Math.Clamp(value, min, max);
-        set(value);
-        Save();
-        Print($"{label} set to {F(value)}.");
     }
 
     private void PrintCoords()
@@ -328,14 +395,13 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var p = player.Position;
-        Print($"x = {F(p.X)}, y = {F(p.Y)}, z = {F(p.Z)}  (zone {(uint)clientState.TerritoryType})");
+        Print($"x = {F(p.X)}, y = {F(p.Y)}, z = {F(p.Z)}  (zone {CurrentTerritory})");
     }
 
     private void PrintStatus()
     {
-        Print($"{(config.Enabled ? "ON" : "OFF")} | radius {F(config.ZoneRadius)} | side {F(config.SideLeeway)} | " +
-              $"widen {F(config.AutoWiden)} | debug {(config.Debug ? "on" : "off")} | " +
-              $"current zone {(uint)clientState.TerritoryType}");
+        Print($"{(config.Enabled ? "ON" : "OFF")} | spots {(config.UseSpots ? "on" : "off")} | " +
+              $"auto edge {(config.UseAutoEdge ? "on" : "off")} | current zone {CurrentTerritory}");
 
         if (config.Spots.Count == 0)
         {
@@ -352,18 +418,16 @@ public sealed class Plugin : IDalamudPlugin
 
     private void PrintHelp()
     {
-        Print("Commands:");
-        Print("/ledgejump add [name]  - record your current position as a jump spot (stand at the very tip first)");
-        Print("/ledgejump list        - show settings and your spots");
-        Print("/ledgejump remove <n>  - remove spot number n");
-        Print("/ledgejump clear       - remove all spots");
+        Print("/ledgejump                - open the options window");
+        Print("/ledgejump add [name]     - record your position as a jump spot");
+        Print("/ledgejump list           - show your spots");
+        Print("/ledgejump remove <n>     - remove spot number n");
         Print("/ledgejump on | off | toggle");
-        Print("/ledgejump radius <n>  - how far before the spot the jump fires (default 0.1)");
-        Print("/ledgejump side <n>    - sideways leeway (default 0.8)");
-        Print("/ledgejump widen <n>   - frame-rate safety multiplier (default 1.5)");
+        Print("/ledgejump auto [on|off]  - automatic edge detection");
         Print("/ledgejump debug [on|off] - chat messages for each jump");
-        Print("/ledgejump coords      - print your coordinates");
-        Print("/ledgejump test        - make your character jump once");
+        Print("/ledgejump coords         - print your coordinates");
+        Print("/ledgejump test           - make your character jump once");
+        Print("Sliders for all the tuning numbers are in the options window.");
     }
 
     // ------------------------------------------------------------------

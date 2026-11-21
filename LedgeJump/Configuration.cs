@@ -19,8 +19,18 @@ public class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 1;
 
+    // ---------------- General ----------------
+
     // Master switch
     public bool Enabled { get; set; } = true;
+
+    // Print a line in chat for each jump / near-miss.
+    public bool Debug { get; set; } = true;
+
+    // ---------------- Recorded spots ----------------
+
+    // Use the spots you recorded by hand.
+    public bool UseSpots { get; set; } = true;
 
     // How far BEFORE the recorded spot (yalms) the jump is allowed to fire.
     public float ZoneRadius { get; set; } = 0.1f;
@@ -32,8 +42,25 @@ public class Configuration : IPluginConfiguration
     // so a low frame rate cannot make you skip over the spot.
     public float AutoWiden { get; set; } = 1.5f;
 
-    // Print a line in chat for each jump / near-miss.
-    public bool Debug { get; set; } = true;
-
     public List<Spot> Spots { get; set; } = new();
+
+    // ---------------- Automatic edge detection (uses the game's collision) ----------------
+
+    // Jump automatically at the edge of whatever you are standing on.
+    public bool UseAutoEdge { get; set; } = false;
+
+    // How far BEFORE the real edge (yalms) the jump is pressed.
+    public float EdgeLead { get; set; } = 0.05f;
+
+    // Frame safety: the trigger window is at least this many times the distance you move per frame.
+    public float EdgeWiden { get; set; } = 1.0f;
+
+    // Ground that is lower than this many yalms below you counts as "a fall".
+    public float DropThreshold { get; set; } = 1.0f;
+
+    // How far ahead (yalms) to look for an edge.
+    public float ScanRange { get; set; } = 1.5f;
+
+    // Do not jump when a wall is what is ahead of you (instead of a drop).
+    public bool IgnoreWalls { get; set; } = true;
 }
