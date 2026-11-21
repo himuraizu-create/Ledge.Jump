@@ -87,7 +87,41 @@ internal sealed class ConfigWindow : Window
     private void DrawSpots()
     {
         ImGui.Spacing();
-        ImGui.TextWrapped("Stand at the very tip of a platform, then click Record. Later, running at that spot makes you jump.");
+        ImGui.Text("Learn an edge (best for thin or odd platforms)");
+        ImGui.TextWrapped(
+            "Click Learn, then walk off the edge by hand (do not jump). The plugin watches your own height, " +
+            "notices the moment you drop, and records the last place you stood. It does not need the game's collision data.");
+        ImGui.Spacing();
+
+        if (plugin.IsLearning)
+        {
+            if (ImGui.Button("Cancel learning"))
+                plugin.CancelLearning();
+        }
+        else if (ImGui.Button("Learn an edge"))
+        {
+            plugin.StartLearning();
+        }
+
+        if (!string.IsNullOrEmpty(plugin.LearnStatus))
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(plugin.IsLearning ? ImGuiColors.DalamudYellow : ImGuiColors.DalamudGrey,
+                plugin.LearnStatus);
+        }
+
+        Slider("Standing height tolerance", config.LearnTolerance, 0.002f, 0.05f, v => config.LearnTolerance = v,
+            "How much your height may change and still count as 'still standing' while learning.\n" +
+            "Smaller = records closer to the true edge, but too small can miss on slightly uneven ground.\n" +
+            "If a learned spot is always a bit too far out, lower this.",
+            "%.3f");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.Text("Record by hand");
+        ImGui.TextWrapped("Or stand at the very tip of a platform and click Record. Running at that spot makes you jump.");
         ImGui.Spacing();
 
         ImGui.SetNextItemWidth(200f);
@@ -211,7 +245,8 @@ internal sealed class ConfigWindow : Window
             ImGui.TextColored(ImGuiColors.DalamudRed,
                 "The game's collision cannot see ground under you here (or you are in the air).");
             ImGui.TextWrapped("If you are standing on a normal platform and keep seeing this, the platform is not part of the " +
-                              "collision the plugin can read. Use recorded jump spots for it instead.");
+                              "collision this feature can read. Use \"Learn an edge\" on the Jump Spots tab for it instead. " +
+                              "That works from your own movement and does not need the collision data.");
             return;
         }
 
@@ -241,11 +276,12 @@ internal sealed class ConfigWindow : Window
         Tip(tip);
     }
 
-    private void Slider(string label, float current, float min, float max, Action<float> set, string tip)
+    private void Slider(string label, float current, float min, float max, Action<float> set, string tip,
+        string format = "%.2f")
     {
         var v = current;
         ImGui.SetNextItemWidth(220f);
-        if (ImGui.SliderFloat(label, ref v, min, max, "%.2f"))
+        if (ImGui.SliderFloat(label, ref v, min, max, format))
             set(v);
         if (ImGui.IsItemDeactivatedAfterEdit())
             save();

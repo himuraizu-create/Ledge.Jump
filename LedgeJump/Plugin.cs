@@ -47,6 +47,16 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<Spot, float> closest = new();
     private readonly HashSet<Spot> jumpedThisVisit = new();
 
+    // "Learn an edge" mode: you walk off a ledge by hand, and the plugin records the last place you stood.
+    // It needs no collision data, because it only watches your own height. Your character stays level
+    // while standing on something, so the game's idea of "standable" shows up in your movement.
+    private const int LearnBufferSize = 90;      // frames of history kept while learning (about 1.5 s at 60 fps)
+    private const float LearnFallDepth = 0.6f;   // you must drop this far below your standing height to count as a fall
+    private readonly List<Vector3> learnBuffer = new();
+
+    internal bool IsLearning { get; private set; }
+    internal string LearnStatus { get; private set; } = "";
+
     // Latest automatic-edge reading, shown live in the options window
     internal EdgeResult LastEdge { get; private set; }
     internal bool HaveEdgeReading { get; private set; }
@@ -132,6 +142,13 @@ public sealed class Plugin : IDalamudPlugin
         var dt = now - lastTime;
         last = pos;
         lastTime = now;
+
+        // While learning, the plugin only watches you. It does not jump for you.
+        if (IsLearning)
+        {
+            UpdateLearning(pos, step);
+            return;
+        }
 
         var wantAuto = config.Enabled && config.UseAutoEdge;
         var wantSpots = config.Enabled && config.UseSpots && config.Spots.Count > 0;
@@ -239,6 +256,117 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // ------------------------------------------------------------------
+    // Learn an edge by walking off it
+    // ------------------------------------------------------------------
+    internal void StartLearning()
+    {
+        learnBuffer.Clear();
+        IsLearning = true;
+        LearnStatus = "Learning... walk off the edge you want to record. Do not jump.";
+        Print("Learning: walk (do not jump) off the edge you want to record.");
+    }
+
+    internal void CancelLearning()
+    {
+        if (!IsLearning)
+            return;
+
+        IsLearning = false;
+        learnBuffer.Clear();
+        LearnStatus = "Learning cancelled.";
+        Print("Learning cancelled.");
+    }
+
+    private void UpdateLearning(Vector3 pos, float step)
+    {
+        // A huge jump in position means a teleport or a loading screen. Start over.
+        if (step > MaxStep)
+        {
+            learnBuffer.Clear();
+            return;
+        }
+
+        learnBuffer.Add(pos);
+        if (learnBuffer.Count > LearnBufferSize)
+            learnBuffer.RemoveAt(0);
+
+        var n = learnBuffer.Count;
+        if (n < 12)
+            return;
+
+        // The highest point in the recent history is the height you were standing at.
+        var maxY = float.MinValue;
+        for (var i = 0; i < n; i++)
+            maxY = MathF.Max(maxY, learnBuffer[i].Y);
+
+        // Have you dropped far enough below it to be falling?
+        if (pos.Y > maxY - LearnFallDepth)
+            return;
+
+        // The last frame at which you were still at standing height.
+        var s = -1;
+        for (var i = n - 1; i >= 0; i--)
+        {
+            if (learnBuffer[i].Y >= maxY - config.LearnTolerance)
+            {
+                s = i;
+                break;
+            }
+        }
+
+        // You need a steady stretch of walking before that frame. Otherwise this is a fall that
+        // started earlier (for example after a jump), not a walk off a ledge.
+        if (s < 5)
+            return;
+
+        for (var i = s - 5; i <= s; i++)
+        {
+            if (MathF.Abs(learnBuffer[i].Y - maxY) > 0.05f)
+                return;
+        }
+
+        var walked = Vector2.Distance(
+            new Vector2(learnBuffer[s - 5].X, learnBuffer[s - 5].Z),
+            new Vector2(learnBuffer[s].X, learnBuffer[s].Z));
+        if (walked < 0.05f)
+            return;
+
+        // Did you rise to get here? Then it was a jump, not a walk-off.
+        var before = Math.Max(0, s - 10);
+        if (maxY - learnBuffer[before].Y > 0.1f)
+        {
+            learnBuffer.Clear();
+            LearnStatus = "That looked like a jump or a slope, not a walk-off. Press Learn and try again.";
+            IsLearning = false;
+            Print(LearnStatus);
+            return;
+        }
+
+        // The true edge is somewhere between the last frame you stood and the next one.
+        var a = learnBuffer[s];
+        var b = learnBuffer[Math.Min(s + 1, n - 1)];
+        var edgeX = (a.X + b.X) * 0.5f;
+        var edgeZ = (a.Z + b.Z) * 0.5f;
+
+        var spot = new Spot
+        {
+            Name = $"Learned {config.Spots.Count + 1}",
+            Territory = CurrentTerritory,
+            X = edgeX,
+            Y = a.Y,
+            Z = edgeZ,
+        };
+
+        config.Spots.Add(spot);
+        Save();
+
+        IsLearning = false;
+        learnBuffer.Clear();
+        LearnStatus = $"Learned \"{spot.Name}\" at x = {F(spot.X)}, z = {F(spot.Z)}.";
+        Print(LearnStatus + " Run at it to test. If it jumps too late, raise the jump point slider.");
+    }
+
+    // ------------------------------------------------------------------
     // Things the options window calls
     // ------------------------------------------------------------------
     internal void TestJump() => Print($"Test jump sent. Game accepted it: {DoJump()}");
@@ -318,6 +446,13 @@ public sealed class Plugin : IDalamudPlugin
 
             case "add":
                 AddSpot(string.Join(' ', parts.Skip(1)));
+                break;
+
+            case "learn":
+                if (IsLearning)
+                    CancelLearning();
+                else
+                    StartLearning();
                 break;
 
             case "list":
@@ -420,6 +555,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         Print("/ledgejump                - open the options window");
         Print("/ledgejump add [name]     - record your position as a jump spot");
+        Print("/ledgejump learn          - walk off an edge by hand and the plugin records it");
         Print("/ledgejump list           - show your spots");
         Print("/ledgejump remove <n>     - remove spot number n");
         Print("/ledgejump on | off | toggle");

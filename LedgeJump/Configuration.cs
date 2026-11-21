@@ -63,4 +63,9 @@ public class Configuration : IPluginConfiguration
 
     // Do not jump when a wall is what is ahead of you (instead of a drop).
     public bool IgnoreWalls { get; set; } = true;
+
+    // ---------------- Learn an edge by walking off it ----------------
+
+    // While learning, frames where your height is within this many yalms of your standing height count as "still standing".
+    public float LearnTolerance { get; set; } = 0.01f;
 }
