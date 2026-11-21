@@ -1,0 +1,103 @@
+name: Build and publish
+
+# Runs every time you save a change to the plugin code on the main branch,
+# and can also be started by hand from the Actions tab ("Run workflow").
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'repo.json'
+      - '**.md'
+  workflow_dispatch:
+
+# Lets the workflow create releases and update repo.json
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      DALAMUD_HOME: ${{ github.workspace }}/dalamud
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Dalamud
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile dalamud.zip
+          Expand-Archive -Force dalamud.zip "$env:DALAMUD_HOME"
+
+      - name: Work out the version number
+        id: ver
+        shell: bash
+        run: echo "version=0.1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build LedgeJump/LedgeJump.csproj --configuration Release -p:Version=${{ steps.ver.outputs.version }}
+
+      - name: Find the plugin zip
+        id: zip
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path LedgeJump -Recurse -Filter latest.zip | Select-Object -First 1
+          if ($null -eq $zip) { throw "latest.zip was not produced by the build" }
+          Write-Host "Found: $($zip.FullName)"
+          "path=$($zip.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.ver.outputs.version }}" "${{ steps.zip.outputs.path }}" \
+            --title "Ledge Jump ${{ steps.ver.outputs.version }}" \
+            --notes "Automatic build ${{ steps.ver.outputs.version }}"
+
+      - name: Update repo.json
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $repo    = "${{ github.repository }}"
+          $owner   = "${{ github.repository_owner }}"
+          $url     = "https://github.com/$repo/releases/download/v$version/latest.zip"
+
+          $manifest = [ordered]@{
+            Author              = $owner
+            Name                = "Ledge Jump"
+            InternalName        = "LedgeJump"
+            AssemblyVersion     = $version
+            Description         = "Record the tip of a platform with /ledgejump add, then run at it. The plugin checks your position every frame and jumps at the recorded spot. Type /ledgejump for help."
+            Punchline           = "Jumps at the exact edge of platforms you record."
+            ApplicableVersion   = "any"
+            RepoUrl             = "https://github.com/$repo"
+            Tags                = @("jump", "parkour", "utility")
+            DalamudApiLevel     = 15
+            LoadPriority        = 0
+            IsHide              = $false
+            IsTestingExclusive  = $false
+            DownloadLinkInstall = $url
+            DownloadLinkTesting = $url
+            DownloadLinkUpdate  = $url
+            LastUpdate          = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+          }
+
+          ConvertTo-Json -InputObject @($manifest) -Depth 5 | Set-Content -Path repo.json -Encoding utf8
+          Get-Content repo.json
+
+      - name: Save repo.json back to the repository
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo.json
+          git commit -m "Update repo.json for ${{ steps.ver.outputs.version }}"
+          git pull --rebase origin main
+          git push origin HEAD:main
