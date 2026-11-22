@@ -108,6 +108,14 @@ public sealed class Plugin : IDalamudPlugin
             config.Version = 3;
             pluginInterface.SavePluginConfig(config);
         }
+
+        // Version 4: start from the hitbox size itself (scale 1.00). The jump report shows if it needs adjusting.
+        if (config.Version < 4)
+        {
+            config.MarginScale = 1.0f;
+            config.Version = 4;
+            pluginInterface.SavePluginConfig(config);
+        }
         edgeDetector = new EdgeDetector(config);
 
         configWindow = new ConfigWindow(this, config, Save);
@@ -203,6 +211,9 @@ public sealed class Plugin : IDalamudPlugin
         if (config.Debug)
             UpdateJumpReport(pos, now);
 
+        if (config.Debug && config.Enabled && config.UseAutoEdge)
+            UpdateFallWatch(pos.Y, now);
+
         var wantAuto = config.Enabled && config.UseAutoEdge;
         var wantSpots = config.Enabled && config.UseSpots && config.Spots.Count > 0;
         var wantReadout = configWindow.IsOpen;
@@ -226,12 +237,16 @@ public sealed class Plugin : IDalamudPlugin
             LastEdge = edge;
             HaveEdgeReading = true;
 
+            if (wantAuto && config.Debug)
+                RecordReading(edge);
+
             // Jump when the point (edge - lead) will be passed before the next frame.
             if (wantAuto && canJump && edge.Grounded && edge.HasEdge && !edge.WallAhead &&
                 edge.EdgeDistance - config.EdgeLead <= step * config.EdgeWiden)
             {
                 var accepted = DoJump();
                 cooldownUntil = now + CooldownSeconds;
+                lastAutoPress = now;
                 canJump = false;
 
                 if (config.Debug)
@@ -426,6 +441,69 @@ public sealed class Plugin : IDalamudPlugin
         learnBuffer.Clear();
         LearnStatus = $"Learned \"{spot.Name}\" at x = {F(spot.X)}, z = {F(spot.Z)}.";
         Print(LearnStatus + " Run at it to test. If it jumps too late, raise the jump point slider.");
+    }
+
+    // ------------------------------------------------------------------
+    // Fall report: if you walk off something while automatic edge detection is on and no jump was pressed,
+    // print what the detector saw in the last few frames. That says exactly why it did not fire.
+    // ------------------------------------------------------------------
+    private readonly List<string> autoHistory = new();
+    private int autoStable;
+    private bool autoHadLevel;
+    private float autoLevelY;
+    private float autoPrevY;
+    private double lastAutoPress = -10;
+    private double lastFallReport = -10;
+
+    private void RecordReading(EdgeResult e)
+    {
+        string text;
+        if (!e.Grounded)
+            text = "no ground";
+        else if (!e.HasEdge)
+            text = "no edge in range";
+        else
+            text = $"edge {F(e.EdgeDistance)} ahead" + (e.WallAhead ? " (WALL)" : "");
+
+        autoHistory.Add(text);
+        if (autoHistory.Count > 6)
+            autoHistory.RemoveAt(0);
+    }
+
+    private void UpdateFallWatch(float y, double now)
+    {
+        if (MathF.Abs(y - autoPrevY) <= 0.004f)
+        {
+            autoStable++;
+            if (autoStable >= 4)
+            {
+                autoLevelY = y;
+                autoHadLevel = true;
+            }
+        }
+        else
+        {
+            autoStable = 0;
+        }
+
+        if (y > autoLevelY + 0.02f)
+            autoHadLevel = false;
+
+        if (autoHadLevel && y < autoLevelY - 0.01f && y < autoPrevY)
+        {
+            autoHadLevel = false;
+            autoStable = 0;
+
+            if (now - lastAutoPress > 1.0 && now - lastFallReport > 1.5 && autoHistory.Count > 0)
+            {
+                lastFallReport = now;
+                Print("FALL REPORT: you walked off and no automatic jump was pressed. What the detector saw in your last " +
+                      $"frames, oldest first: {string.Join(" | ", autoHistory)}. " +
+                      $"(margin {F(EffectiveMargin)}, jump point {F(config.EdgeLead)})");
+            }
+        }
+
+        autoPrevY = y;
     }
 
     // ------------------------------------------------------------------

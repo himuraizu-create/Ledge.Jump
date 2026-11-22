@@ -72,18 +72,34 @@ internal sealed class EdgeDetector
     }
 
     // ------------------------------------------------------------------
-    // Body-shaped ground checks.
-    // The game lets you stand while ANY part of your body's circle (radius = "radius" below) overlaps ground.
-    // So "can I stand here?" is tested over a whole disk, not at a single point. That works no matter which
-    // side of the platform you are floating off, and for edges that are not square-on to your walking direction.
+    // Ground checks that account for the size of your body.
+    // The game lets you keep standing a little way past the end of the collision. Two models are used:
+    //   1. Simple: the ground test is taken "radius" yalms BEHIND the point it is about. This is right whenever
+    //      there is ground behind you along your path, which is the normal case.
+    //   2. Disk: used only when the simple one finds nothing, e.g. you are floating off the SIDE of something.
+    //      The ground test then looks anywhere under your body's circle.
     // ------------------------------------------------------------------
     private const float MinDiskRadius = 0.05f;
 
-    // (fraction of the radius, number of sample points). Outer ring first: it is the one that decides the edge.
-    private static readonly (float Fraction, int Count)[] Rings = { (1.0f, 16), (0.66f, 10), (0.33f, 6) };
+    // How much bigger than the standing zone the "am I standing right now?" check is.
+    private const float GroundSlack = 0.08f;
 
-    // Is there ground anywhere under the disk around (x, z)? The centre is tried first, then points around the
-    // disk starting on the side you are walking away from, because that is where your ground usually is.
+    // In disk mode, a point only counts as support if it is at about your standing height.
+    private const float SupportBelow = 0.35f;
+    private const float SupportAbove = 0.30f;
+
+    // While scanning ahead, only the part of the disk behind you (and beside you) can still be holding you up.
+    private const float ScanArc = 1.92f;   // about 110 degrees either side of straight behind
+
+    // (fraction of the radius, number of sample points). Dense enough to catch thin rails and arms.
+    private static readonly (float Fraction, int Count)[] Rings = { (1.0f, 24), (0.66f, 16), (0.33f, 8) };
+
+    private bool IsSupport(float x, float z, float standY)
+    {
+        return CastDown(x, standY, z, out var y) && y >= standY - SupportBelow && y <= standY + SupportAbove;
+    }
+
+    // Disk model: is there support anywhere in the rear and side parts of the disk around (x, z)?
     private bool IsGroundNear(float x, float z, float standY, float radius, float ux, float uz)
     {
         if (IsGround(x, z, standY))
@@ -100,8 +116,11 @@ internal sealed class EdgeDetector
             for (var k = 0; k < count; k++)
             {
                 var steps = (k + 1) / 2;
+                if (steps * turn > ScanArc)
+                    break;
+
                 var a = rear + (k % 2 == 1 ? steps : -steps) * turn;
-                if (IsGround(x + MathF.Cos(a) * r, z + MathF.Sin(a) * r, standY))
+                if (IsSupport(x + MathF.Cos(a) * r, z + MathF.Sin(a) * r, standY))
                     return true;
             }
         }
@@ -109,12 +128,7 @@ internal sealed class EdgeDetector
         return false;
     }
 
-    // How much bigger than the measured standing zone the "am I standing right now?" check is. Your real standing
-    // zone varies by about a frame of movement (0.60 to 0.68 was measured), and being a little generous here is harmless.
-    private const float GroundSlack = 0.08f;
-
-    // The height of the ground you are standing on: directly under you if there is some, otherwise the closest
-    // ground under your body's circle (you are floating off the side of something).
+    // Disk model, whole circle: the height of the ground closest to your feet under your body.
     // nearestBelow is only meaningful when this returns false.
     private bool FindGroundHeight(Vector3 pos, float radius, out float groundY, out float nearestBelow)
     {
@@ -165,6 +179,16 @@ internal sealed class EdgeDetector
         return false;
     }
 
+    // Is there still ground at distance d along your path?
+    private bool GroundAt(Vector3 pos, float ux, float uz, float radius, float groundY, bool useDisk, float d)
+    {
+        if (useDisk)
+            return IsGroundNear(pos.X + ux * d, pos.Z + uz * d, groundY, radius, ux, uz);
+
+        // Simple model: test "radius" yalms behind the point.
+        return IsGround(pos.X + ux * (d - radius), pos.Z + uz * (d - radius), groundY);
+    }
+
     // (ux, uz) must be the direction you are walking, as a length-1 vector.
     // "radius" is how far past the end of the collision you can still stand. EdgeDistance then becomes the
     // distance to the last place you can still stand, not to the end of the collision. 0 = the collision itself.
@@ -174,8 +198,24 @@ internal sealed class EdgeDetector
         Collision.Preset = config.CollisionPreset;
         Collision.Sweep = false;
 
-        // What are you standing on? If nothing is under you or your body, you are in the air (or in a spot with no collision).
-        if (!FindGroundHeight(pos, radius, out var groundY, out var nearestBelow))
+        // What are you standing on? First try the simple model (ground behind you along your path).
+        var useDisk = false;
+        var nearestBelow = float.NaN;
+        float groundY;
+
+        var bx = pos.X - ux * radius;
+        var bz = pos.Z - uz * radius;
+
+        if (CastDown(bx, pos.Y, bz, out groundY) && MathF.Abs(groundY - pos.Y) <= RayLift)
+        {
+            // Simple model works.
+        }
+        else if (FindGroundHeight(pos, radius, out groundY, out nearestBelow))
+        {
+            // Floating off the side of something: use the disk model.
+            useDisk = true;
+        }
+        else
         {
             result.NearestGroundBelow = nearestBelow;
             return result;
@@ -189,7 +229,7 @@ internal sealed class EdgeDetector
 
         for (var d = CoarseStep; d <= range + 0.0001f; d += CoarseStep)
         {
-            if (!IsGroundNear(pos.X + ux * d, pos.Z + uz * d, groundY, radius, ux, uz))
+            if (!GroundAt(pos, ux, uz, radius, groundY, useDisk, d))
             {
                 // The ground ends somewhere between "previous" and "d". Narrow it down.
                 var lo = previous;
@@ -197,7 +237,7 @@ internal sealed class EdgeDetector
                 for (var i = 0; i < RefineSteps; i++)
                 {
                     var mid = (lo + hi) * 0.5f;
-                    if (IsGroundNear(pos.X + ux * mid, pos.Z + uz * mid, groundY, radius, ux, uz))
+                    if (GroundAt(pos, ux, uz, radius, groundY, useDisk, mid))
                         lo = mid;
                     else
                         hi = mid;
