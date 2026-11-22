@@ -221,6 +221,23 @@ internal sealed class ConfigWindow : Window
         Slider("Frame-rate safety", config.EdgeWiden, 0.5f, 3f, v => config.EdgeWiden = v,
             "Higher = starts the jump a little earlier to make sure it is not missed on slow frames.\n" +
             "1.0 is the tightest. Raise it if it sometimes does not jump.");
+        Check("Standing margin = my hitbox size", config.AutoMargin, v => config.AutoMargin = v,
+            "You can keep standing while the ring around you (the one you see when you target yourself) still overlaps the ground.\n" +
+            "With this on, the jump is aimed at the last place you can stand, using the size of your own ring.");
+        if (config.AutoMargin)
+        {
+            Slider("Hitbox scale", config.MarginScale, 0.5f, 1.5f, v => config.MarginScale = v,
+                "1.00 = exactly your hitbox radius. Lower it if you fall off before the jump happens,\n" +
+                "raise it if you jump while still well inside the edge. /ledgejump margin shows what is right.");
+        }
+        else
+        {
+            Slider("Standing margin (yalms past the edge)", config.StandingMargin, 0f, 1.0f, v => config.StandingMargin = v,
+                "How far past the end of the collision you can still stand. Measure it with /ledgejump margin.");
+        }
+
+        ImGui.TextColored(ImGuiColors.DalamudGrey,
+            $"Your hitbox radius: {F(plugin.HitboxRadius)}   Margin in use: {F(plugin.EffectiveMargin)}");
         Slider("What counts as a drop (yalms)", config.DropThreshold, 0.3f, 5f, v => config.DropThreshold = v,
             "Ground lower than this below you counts as a fall. Small steps down are ignored.");
         Slider("Look-ahead distance (yalms)", config.ScanRange, 0.5f, 3f, v => config.ScanRange = v,
@@ -245,6 +262,10 @@ internal sealed class ConfigWindow : Window
 
             Tip(Collision.Filters[i].Help);
         }
+
+        Check("Body-sized check (sphere sweep)", config.UseSweep, v => config.UseSweep = v,
+            "Checks the ground with a small ball instead of a thin ray, so it also feels ground slightly to the side,\n" +
+            "a bit like your body does. Try it if you can stand where the collision seems to have ended.");
 
         ImGui.Spacing();
         if (ImGui.Button("Probe what is under me"))

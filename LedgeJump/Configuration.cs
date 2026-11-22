@@ -68,6 +68,19 @@ public class Configuration : IPluginConfiguration
     // Which collision filter the automatic edge detection uses (see Collision.Filters). 0 = Standard.
     public int CollisionPreset { get; set; } = 0;
 
+    // Use a body-sized sweep instead of a thin ray for the ground checks.
+    public bool UseSweep { get; set; } = false;
+
+    // How far past the end of the collision (yalms) you can still stand. Measure it with /ledgejump margin.
+    public float StandingMargin { get; set; } = 0f;
+
+    // Instead of the manual number above, use the size of your own hitbox (the ring you see when you target yourself).
+    // The game lets you keep standing while that ring still overlaps the ground.
+    public bool AutoMargin { get; set; } = true;
+
+    // Fine-tune for the automatic margin: 1.0 = exactly your hitbox radius.
+    public float MarginScale { get; set; } = 1.0f;
+
     // ---------------- Learn an edge by walking off it ----------------
 
     // While learning, frames where your height is within this many yalms of your standing height count as "still standing".

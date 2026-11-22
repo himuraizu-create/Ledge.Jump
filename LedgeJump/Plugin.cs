@@ -59,6 +59,12 @@ public sealed class Plugin : IDalamudPlugin
 
     // Latest automatic-edge reading, shown live in the options window
     internal EdgeResult LastEdge { get; private set; }
+
+    // Size of your character's hitbox (the ring around you when you target yourself), read from the game every frame.
+    internal float HitboxRadius { get; private set; }
+
+    // How far past the end of the collision you can still stand, as currently configured.
+    internal float EffectiveMargin => config.AutoMargin ? HitboxRadius * config.MarginScale : config.StandingMargin;
     internal bool HaveEdgeReading { get; private set; }
 
     internal uint CurrentTerritory => (uint)clientState.TerritoryType;
@@ -113,6 +119,14 @@ public sealed class Plugin : IDalamudPlugin
 
     private void ToggleWindow() => configWindow.Toggle();
 
+    private static unsafe float ReadHitboxRadius(nint address)
+    {
+        if (address == 0)
+            return 0f;
+
+        return ((FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)address)->HitboxRadius;
+    }
+
     // ------------------------------------------------------------------
     // Runs every frame
     // ------------------------------------------------------------------
@@ -126,6 +140,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var pos = player.Position;
+        HitboxRadius = ReadHitboxRadius(player.Address);
         var now = clock.Elapsed.TotalSeconds;
 
         if (!haveLast)
@@ -157,6 +172,13 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        // Measuring mode (/ledgejump margin). Everything else is paused while it runs.
+        if (marginTest)
+        {
+            UpdateMarginTest(pos, dx, dz, step, now);
+            return;
+        }
+
         var wantAuto = config.Enabled && config.UseAutoEdge;
         var wantSpots = config.Enabled && config.UseSpots && config.Spots.Count > 0;
         var wantReadout = configWindow.IsOpen;
@@ -176,7 +198,7 @@ public sealed class Plugin : IDalamudPlugin
         // -------- Automatic edge detection (the game's collision) --------
         if (step >= MinStep && (wantAuto || wantReadout))
         {
-            var edge = edgeDetector.Evaluate(pos, ux, uz);
+            var edge = edgeDetector.Evaluate(pos, ux, uz, EffectiveMargin);
             LastEdge = edge;
             HaveEdgeReading = true;
 
@@ -374,6 +396,109 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // ------------------------------------------------------------------
+    // Measuring: how far past the end of the collision can you keep standing?
+    // You walk off ledges by hand. For each one, the plugin remembers where the game's collision ended and where
+    // you were when your height first started to drop, and reports the difference. The numbers are only as exact
+    // as one frame of movement (about 0.1 yalm), so do several and look at the average.
+    // ------------------------------------------------------------------
+    private bool marginTest;
+    private int marginStable;
+    private bool marginHadLevel;
+    private float marginLevelY;
+    private float marginPrevY;
+    private float marginPrevX;
+    private float marginPrevZ;
+    private bool marginHaveEdge;
+    private float marginEdgeX;
+    private float marginEdgeZ;
+    private float marginUx;
+    private float marginUz;
+    private double marginEdgeTime;
+    private int marginCount;
+    private float marginSum;
+    private float marginMin;
+    private float marginMax;
+
+    private void UpdateMarginTest(Vector3 pos, float dx, float dz, float step, double now)
+    {
+        var y = pos.Y;
+
+        // Standing steadily?
+        if (MathF.Abs(y - marginPrevY) <= 0.004f)
+        {
+            marginStable++;
+            if (marginStable >= 4)
+            {
+                marginLevelY = y;
+                marginHadLevel = true;
+            }
+        }
+        else
+        {
+            marginStable = 0;
+        }
+
+        // You jumped or climbed: that is not a walk-off.
+        if (y > marginLevelY + 0.02f)
+            marginHadLevel = false;
+
+        // While you walk on ground the collision can see, keep track of where that ground ends ahead of you.
+        if (marginHadLevel && step >= MinStep && step <= MaxStep)
+        {
+            var ux = dx / step;
+            var uz = dz / step;
+            var e = edgeDetector.Evaluate(pos, ux, uz, 0f);
+            if (e.Grounded && e.HasEdge)
+            {
+                marginHaveEdge = true;
+                marginEdgeX = pos.X + ux * e.EdgeDistance;
+                marginEdgeZ = pos.Z + uz * e.EdgeDistance;
+                marginUx = ux;
+                marginUz = uz;
+                marginEdgeTime = now;
+            }
+        }
+
+        // Walked off: you were standing steadily and your height is now dropping.
+        if (marginHadLevel && y < marginLevelY - 0.01f && y < marginPrevY)
+        {
+            marginHadLevel = false;
+            marginStable = 0;
+
+            if (!marginHaveEdge || now - marginEdgeTime > 0.6)
+            {
+                Print("MARGIN: no collision edge was seen just before you fell, so nothing was measured. " +
+                      "That usually means the detector cannot see this platform. Check the filter on the Auto Edge tab.");
+            }
+            else
+            {
+                // You were last standing somewhere between the previous frame and this one.
+                var before = (marginPrevX - marginEdgeX) * marginUx + (marginPrevZ - marginEdgeZ) * marginUz;
+                var after = (pos.X - marginEdgeX) * marginUx + (pos.Z - marginEdgeZ) * marginUz;
+                var mid = (before + after) * 0.5f;
+
+                marginCount++;
+                marginSum += mid;
+                marginMin = marginCount == 1 ? mid : MathF.Min(marginMin, mid);
+                marginMax = marginCount == 1 ? mid : MathF.Max(marginMax, mid);
+
+                var avg = marginSum / marginCount;
+                Print($"MARGIN: you stayed standing about {F(mid)} yalms past the end of the collision " +
+                      $"(between {F(before)} and {F(after)}). {marginCount} measured so far: " +
+                      $"average {F(avg)}, smallest {F(marginMin)}, largest {F(marginMax)}. " +
+                      $"Your hitbox radius is {F(HitboxRadius)}" +
+                      (HitboxRadius > 0.001f ? $", so the average is {F(avg / HitboxRadius)} times it." : "."));
+            }
+
+            marginHaveEdge = false;
+        }
+
+        marginPrevY = y;
+        marginPrevX = pos.X;
+        marginPrevZ = pos.Z;
+    }
+
+    // ------------------------------------------------------------------
     // Experiment: does the game accept a jump just AFTER you walk off an edge?
     // If it does, a jump could be triggered by the fall itself, with no coordinates at all.
     // This only measures. It is off unless you type /ledgejump reacttest.
@@ -508,7 +633,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var pos = player.Position;
-        Print($"PROBE at X {F(pos.X)}  Y {F(pos.Y)}  Z {F(pos.Z)}. Rays straight down through your feet, one line per filter:");
+        Print($"PROBE at X {F(pos.X)}  Y {F(pos.Y)}  Z {F(pos.Z)}. Your hitbox radius is {F(HitboxRadius)}. Rays straight down through your feet, one line per filter:");
         foreach (var line in Collision.Probe(pos))
         {
             Print(line);
@@ -598,6 +723,27 @@ public sealed class Plugin : IDalamudPlugin
                     CancelLearning();
                 else
                     StartLearning();
+                break;
+
+            case "margin":
+                if (marginTest)
+                {
+                    marginTest = false;
+                    Print("Margin measuring OFF. Everything is back to normal.");
+                }
+                else
+                {
+                    marginTest = true;
+                    marginStable = 0;
+                    marginHadLevel = false;
+                    marginHaveEdge = false;
+                    marginCount = 0;
+                    marginSum = 0f;
+                    Print($"Margin measuring ON (your hitbox radius is {F(HitboxRadius)}). Walk off ledges on foot, WITHOUT jumping, at your normal pace. " +
+                          "Each time it prints how far past the end of the collision you stayed standing. " +
+                          "Other features are paused. Type /ledgejump margin again to turn it off.");
+                }
+
                 break;
 
             case "probe":
@@ -727,6 +873,7 @@ public sealed class Plugin : IDalamudPlugin
         Print("/ledgejump                - open the options window");
         Print("/ledgejump add [name]     - record your position as a jump spot");
         Print("/ledgejump learn          - walk off an edge by hand and the plugin records it");
+        Print("/ledgejump margin  - measure how far past the end of the collision you can keep standing (walk off ledges by hand)");
         Print("/ledgejump probe  - print what the game's collision sees under your feet (stand on the thing first)");
         Print("/ledgejump reacttest [n]  - experiment: press jump n frames after you walk off an edge (0 = same frame)");
         Print("/ledgejump list           - show your spots");

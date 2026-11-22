@@ -38,7 +38,7 @@ internal sealed class EdgeDetector
     private static unsafe bool CastDown(float x, float fromY, float z, out float hitY)
     {
         var origin = new Vector3(x, fromY + RayLift, z);
-        if (Collision.Raycast(Collision.Preset, origin, new Vector3(0f, -1f, 0f), out var hit))
+        if (Collision.Raycast(Collision.Preset, Collision.Sweep, origin, new Vector3(0f, -1f, 0f), out var hit))
         {
             hitY = hit.Point.Y;
             return true;
@@ -59,7 +59,7 @@ internal sealed class EdgeDetector
     {
         var origin = new Vector3(pos.X, standY + WallHeight, pos.Z);
         var direction = new Vector3(ux, 0f, uz);
-        if (Collision.Raycast(Collision.Preset, origin, direction, out var hit))
+        if (Collision.Raycast(Collision.Preset, false, origin, direction, out var hit))
         {
             return (hit.Point - origin).Length() <= maxDistance;
         }
@@ -68,13 +68,20 @@ internal sealed class EdgeDetector
     }
 
     // (ux, uz) must be the direction you are walking, as a length-1 vector.
-    public EdgeResult Evaluate(Vector3 pos, float ux, float uz)
+    // The game lets you keep standing a little way past the end of the collision (your body has some size).
+    // "margin" models that: every ground test is taken that many yalms BEHIND the point it is really about,
+    // so EdgeDistance becomes the distance to the last place you can still stand, not to the end of the collision.
+    public EdgeResult Evaluate(Vector3 pos, float ux, float uz, float margin)
     {
         var result = new EdgeResult();
         Collision.Preset = config.CollisionPreset;
+        Collision.Sweep = config.UseSweep;
+
+        var bx = pos.X - ux * margin;
+        var bz = pos.Z - uz * margin;
 
         // What are you standing on? If nothing is directly under you, you are in the air (or in a spot with no collision).
-        if (!CastDown(pos.X, pos.Y, pos.Z, out var groundY) || MathF.Abs(groundY - pos.Y) > RayLift)
+        if (!CastDown(bx, pos.Y, bz, out var groundY) || MathF.Abs(groundY - pos.Y) > RayLift)
             return result;
 
         result.Grounded = true;
@@ -85,7 +92,7 @@ internal sealed class EdgeDetector
 
         for (var d = CoarseStep; d <= range + 0.0001f; d += CoarseStep)
         {
-            if (!IsGround(pos.X + ux * d, pos.Z + uz * d, groundY))
+            if (!IsGround(bx + ux * d, bz + uz * d, groundY))
             {
                 // The ground ends somewhere between "previous" and "d". Narrow it down.
                 var lo = previous;
@@ -93,7 +100,7 @@ internal sealed class EdgeDetector
                 for (var i = 0; i < RefineSteps; i++)
                 {
                     var mid = (lo + hi) * 0.5f;
-                    if (IsGround(pos.X + ux * mid, pos.Z + uz * mid, groundY))
+                    if (IsGround(bx + ux * mid, bz + uz * mid, groundY))
                         lo = mid;
                     else
                         hi = mid;

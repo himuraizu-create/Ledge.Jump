@@ -58,15 +58,24 @@ internal static class Collision
         },
     };
 
-    // Which filter the automatic edge detection uses. Set from the settings every frame.
+    // Which filter the automatic edge detection uses, and whether it sweeps a body-sized sphere instead of a thin ray.
+    // Both are set from the settings every frame.
     public static int Preset;
+    public static bool Sweep;
 
-    public static unsafe bool Raycast(int preset, Vector3 origin, Vector3 direction, out RaycastHit hit,
+    // sweep = false: a thin ray, like a laser pointer.
+    // sweep = true: a ball of the game's own sweep size travels along the same line, so it also "feels" geometry
+    //               slightly to the side, a bit like a body does.
+    public static unsafe bool Raycast(int preset, bool sweep, Vector3 origin, Vector3 direction, out RaycastHit hit,
         float maxDistance = 1000000f)
     {
-        // Preset 0 goes through the game's own ready-made helper, exactly as before.
+        // Preset 0 goes through the game's own ready-made helpers, exactly as before.
         if (preset <= 0 || preset >= Filters.Length)
-            return BGCollisionModule.RaycastMaterialFilter(origin, direction, out hit, maxDistance);
+        {
+            return sweep
+                ? BGCollisionModule.SweepSphereMaterialFilter(origin, direction, out hit, maxDistance)
+                : BGCollisionModule.RaycastMaterialFilter(origin, direction, out hit, maxDistance);
+        }
 
         var framework = ClientFramework.Instance();
         if (framework == null || framework->BGCollisionModule == null)
@@ -83,14 +92,17 @@ internal static class Collision
         flags[3] = unchecked((int)(uint)(f.MaterialValue >> 32));
 
         var result = new RaycastHit();
-        var ok = framework->BGCollisionModule->RaycastMaterialFilter(&result, &origin, &direction, maxDistance, f.LayerMask, flags);
+        var ok = sweep
+            ? framework->BGCollisionModule->SweepSphereMaterialFilter(&result, &origin, &direction, maxDistance, f.LayerMask, flags)
+            : framework->BGCollisionModule->RaycastMaterialFilter(&result, &origin, &direction, maxDistance, f.LayerMask, flags);
         hit = result;
         return ok;
     }
 
     private static string F(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
 
-    // Shoots rays straight down through (and around) the given position with every filter, and describes what each one found.
+    // Shoots rays straight down through (and around) the given position with every filter, as a thin ray and as a
+    // body-sized sweep, and describes what each one found.
     public static unsafe List<string> Probe(Vector3 pos)
     {
         var lines = new List<string>();
@@ -99,43 +111,46 @@ internal static class Collision
 
         for (var i = 0; i < Filters.Length; i++)
         {
-            string under;
-            if (Raycast(i, centre, down, out var hit))
+            foreach (var sweep in new[] { false, true })
             {
-                under = $"HIT {F(hit.Point.Y - pos.Y)} from your feet";
-                under += $" | material 0x{hit.Material:X}";
-
-                var collider = hit.Object;
-                if (collider != null)
-                    under += $" | layer 0x{collider->LayerMask:X} | {collider->GetColliderType()}";
-
-                var n = Vector3.Cross(hit.V2 - hit.V1, hit.V3 - hit.V1);
-                var len = n.Length();
-                if (len > 0.00001f)
-                    under += $" | flatness {F(MathF.Abs(n.Y) / len)}";
-            }
-            else
-            {
-                under = "nothing under you";
-            }
-
-            // How much of the ground right around you does this filter see at your height?
-            var rings = "";
-            foreach (var radius in new[] { 0.25f, 0.5f })
-            {
-                var seen = 0;
-                for (var k = 0; k < 8; k++)
+                string under;
+                if (Raycast(i, sweep, centre, down, out var hit))
                 {
-                    var a = k * MathF.PI / 4f;
-                    var origin = new Vector3(pos.X + MathF.Cos(a) * radius, pos.Y + 0.6f, pos.Z + MathF.Sin(a) * radius);
-                    if (Raycast(i, origin, down, out var h) && MathF.Abs(h.Point.Y - pos.Y) <= 0.3f)
-                        seen++;
+                    under = $"HIT {F(hit.Point.Y - pos.Y)} from your feet";
+                    under += $" | material 0x{hit.Material:X}";
+
+                    var collider = hit.Object;
+                    if (collider != null)
+                        under += $" | layer 0x{collider->LayerMask:X} | {collider->GetColliderType()}";
+
+                    var n = Vector3.Cross(hit.V2 - hit.V1, hit.V3 - hit.V1);
+                    var len = n.Length();
+                    if (len > 0.00001f)
+                        under += $" | flatness {F(MathF.Abs(n.Y) / len)}";
+                }
+                else
+                {
+                    under = "nothing under you";
                 }
 
-                rings += $" {F(radius)}: {seen}/8";
-            }
+                // How much of the ground right around you does this filter see at your height?
+                var rings = "";
+                foreach (var radius in new[] { 0.25f, 0.5f })
+                {
+                    var seen = 0;
+                    for (var k = 0; k < 8; k++)
+                    {
+                        var a = k * MathF.PI / 4f;
+                        var origin = new Vector3(pos.X + MathF.Cos(a) * radius, pos.Y + 0.6f, pos.Z + MathF.Sin(a) * radius);
+                        if (Raycast(i, sweep, origin, down, out var h) && MathF.Abs(h.Point.Y - pos.Y) <= 0.3f)
+                            seen++;
+                    }
 
-            lines.Add($"[{i}] {Filters[i].Name}: {under} | around you at your height:{rings}");
+                    rings += $" {F(radius)}: {seen}/8";
+                }
+
+                lines.Add($"[{i}] {Filters[i].Name} ({(sweep ? "sweep" : "ray")}): {under} | around you at your height:{rings}");
+            }
         }
 
         return lines;
