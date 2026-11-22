@@ -38,7 +38,7 @@ internal sealed class EdgeDetector
     private static unsafe bool CastDown(float x, float fromY, float z, out float hitY)
     {
         var origin = new Vector3(x, fromY + RayLift, z);
-        if (BGCollisionModule.RaycastMaterialFilter(origin, new Vector3(0f, -1f, 0f), out var hit))
+        if (Collision.Raycast(Collision.Preset, origin, new Vector3(0f, -1f, 0f), out var hit))
         {
             hitY = hit.Point.Y;
             return true;
@@ -59,7 +59,7 @@ internal sealed class EdgeDetector
     {
         var origin = new Vector3(pos.X, standY + WallHeight, pos.Z);
         var direction = new Vector3(ux, 0f, uz);
-        if (BGCollisionModule.RaycastMaterialFilter(origin, direction, out var hit))
+        if (Collision.Raycast(Collision.Preset, origin, direction, out var hit))
         {
             return (hit.Point - origin).Length() <= maxDistance;
         }
@@ -71,6 +71,7 @@ internal sealed class EdgeDetector
     public EdgeResult Evaluate(Vector3 pos, float ux, float uz)
     {
         var result = new EdgeResult();
+        Collision.Preset = config.CollisionPreset;
 
         // What are you standing on? If nothing is directly under you, you are in the air (or in a spot with no collision).
         if (!CastDown(pos.X, pos.Y, pos.Z, out var groundY) || MathF.Abs(groundY - pos.Y) > RayLift)

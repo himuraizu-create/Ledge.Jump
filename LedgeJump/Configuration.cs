@@ -65,6 +65,9 @@ public class Configuration : IPluginConfiguration
     // Do not jump when a wall is what is ahead of you (instead of a drop).
     public bool IgnoreWalls { get; set; } = true;
 
+    // Which collision filter the automatic edge detection uses (see Collision.Filters). 0 = Standard.
+    public int CollisionPreset { get; set; } = 0;
+
     // ---------------- Learn an edge by walking off it ----------------
 
     // While learning, frames where your height is within this many yalms of your standing height count as "still standing".

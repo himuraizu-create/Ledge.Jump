@@ -391,10 +391,25 @@ public sealed class Plugin : IDalamudPlugin
     private bool reactAccepted;
     private double reactPressTime;
     private double reactFallTime;
+    private double reactPrevTime;
+    private double reactFrameMs;
+    private int reactTried;
+    private int reactJumped;
+
+    private void ReactPress(float y, double now)
+    {
+        reactAccepted = DoJump();
+        reactPressY = y;
+        reactPressTime = now;
+        reactFrames = 0;
+        reactState = 2;
+    }
 
     private void UpdateReactTest(Vector3 pos, double now)
     {
         var y = pos.Y;
+        if (reactPrevTime > 0)
+            reactFrameMs = (now - reactPrevTime) * 1000;
 
         switch (reactState)
         {
@@ -426,6 +441,10 @@ public sealed class Plugin : IDalamudPlugin
                     reactFrames = 0;
                     reactMinY = y;
                     reactFallTime = now;
+
+                    // 0 = press on this very frame, the earliest the plugin can possibly react.
+                    if (reactDelay == 0)
+                        ReactPress(y, now);
                 }
 
                 break;
@@ -435,13 +454,7 @@ public sealed class Plugin : IDalamudPlugin
                 reactMinY = MathF.Min(reactMinY, y);
 
                 if (reactFrames >= reactDelay)
-                {
-                    reactAccepted = DoJump();
-                    reactPressY = y;
-                    reactPressTime = now;
-                    reactFrames = 0;
-                    reactState = 2;
-                }
+                    ReactPress(y, now);
 
                 break;
 
@@ -451,15 +464,18 @@ public sealed class Plugin : IDalamudPlugin
 
                 if (y > reactPrevY + 0.02f)
                 {
-                    Print($"REACT TEST: it JUMPED. Pressed {(reactPressTime - reactFallTime) * 1000:0} ms after the drop was noticed " +
-                          $"(already {F(reactLevelY - reactPressY)} below the edge). Game accepted the press: {reactAccepted}.");
+                    reactTried++;
+                    reactJumped++;
+                    Print($"REACT TEST: it JUMPED. {ReactWhen()} (already {F(reactLevelY - reactPressY)} below the edge, " +
+                          $"frame time {reactFrameMs:0} ms). Tally at this setting: {reactJumped} of {reactTried} jumped.");
                     reactState = 0;
                     reactStable = 0;
                 }
                 else if (y < reactPressY - 0.6f || now - reactPressTime > 0.8)
                 {
-                    Print($"REACT TEST: it did NOT jump. Pressed {(reactPressTime - reactFallTime) * 1000:0} ms after the drop was noticed " +
-                          $"(already {F(reactLevelY - reactPressY)} below the edge). Game accepted the press: {reactAccepted}.");
+                    reactTried++;
+                    Print($"REACT TEST: it did NOT jump. {ReactWhen()} (already {F(reactLevelY - reactPressY)} below the edge, " +
+                          $"frame time {reactFrameMs:0} ms). Tally at this setting: {reactJumped} of {reactTried} jumped.");
                     reactState = 0;
                     reactStable = 0;
                 }
@@ -468,12 +484,37 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         reactPrevY = y;
+        reactPrevTime = now;
     }
+
+    private string ReactWhen() =>
+        reactPressTime - reactFallTime < 0.0005
+            ? "Pressed on the SAME frame the drop first showed."
+            : $"Pressed {(reactPressTime - reactFallTime) * 1000:0} ms after the drop first showed.";
 
     // ------------------------------------------------------------------
     // Things the options window calls
     // ------------------------------------------------------------------
     internal void TestJump() => Print($"Test jump sent. Game accepted it: {DoJump()}");
+
+    // Asks the game's collision what is under your feet, once per filter, and prints the answers.
+    internal void RunProbe()
+    {
+        var player = objectTable.LocalPlayer;
+        if (player == null)
+        {
+            Print("Probe: no character found.");
+            return;
+        }
+
+        var pos = player.Position;
+        Print($"PROBE at X {F(pos.X)}  Y {F(pos.Y)}  Z {F(pos.Z)}. Rays straight down through your feet, one line per filter:");
+        foreach (var line in Collision.Probe(pos))
+        {
+            Print(line);
+            log.Information(line);
+        }
+    }
 
     internal void AddSpot(string name)
     {
@@ -559,6 +600,10 @@ public sealed class Plugin : IDalamudPlugin
                     StartLearning();
                 break;
 
+            case "probe":
+                RunProbe();
+                break;
+
             case "reacttest":
                 if (reactTest && parts.Length < 2)
                 {
@@ -572,7 +617,10 @@ public sealed class Plugin : IDalamudPlugin
                     reactState = 0;
                     reactStable = 0;
                     reactHadLevel = false;
-                    Print($"React test ON (jump pressed {reactDelay} frame(s) after the drop is noticed). " +
+                    reactTried = 0;
+                    reactJumped = 0;
+                    reactPrevTime = 0;
+                    Print($"React test ON (jump pressed {(reactDelay == 0 ? "on the SAME frame" : reactDelay + " frame(s) after")} the drop first shows). " +
                           "Walk off a ledge on foot, WITHOUT jumping. Other features are paused. " +
                           "Type /ledgejump reacttest to turn it off.");
                 }
@@ -679,7 +727,8 @@ public sealed class Plugin : IDalamudPlugin
         Print("/ledgejump                - open the options window");
         Print("/ledgejump add [name]     - record your position as a jump spot");
         Print("/ledgejump learn          - walk off an edge by hand and the plugin records it");
-        Print("/ledgejump reacttest [n]  - experiment: press jump n frames after you walk off an edge");
+        Print("/ledgejump probe  - print what the game's collision sees under your feet (stand on the thing first)");
+        Print("/ledgejump reacttest [n]  - experiment: press jump n frames after you walk off an edge (0 = same frame)");
         Print("/ledgejump list           - show your spots");
         Print("/ledgejump remove <n>     - remove spot number n");
         Print("/ledgejump on | off | toggle");

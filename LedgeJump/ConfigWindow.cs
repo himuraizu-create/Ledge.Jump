@@ -230,6 +230,31 @@ internal sealed class ConfigWindow : Window
         ImGui.Separator();
         ImGui.Spacing();
 
+        ImGui.Text("What the detector can see");
+        ImGui.TextWrapped(
+            "The game files its collision under different layers and materials. If the live readout below cannot see " +
+            "the thing you are standing on, try another option here, then stand on it again.");
+
+        for (var i = 0; i < Collision.Filters.Length; i++)
+        {
+            if (ImGui.RadioButton(Collision.Filters[i].Name, config.CollisionPreset == i))
+            {
+                config.CollisionPreset = i;
+                save();
+            }
+
+            Tip(Collision.Filters[i].Help);
+        }
+
+        ImGui.Spacing();
+        if (ImGui.Button("Probe what is under me"))
+            plugin.RunProbe();
+        Tip("Prints in chat what each option sees directly under your feet. Stand on the thing first.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
         ImGui.Text("Live readout (walk toward an edge with this window open)");
         ImGui.Spacing();
 
