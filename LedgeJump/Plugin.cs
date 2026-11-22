@@ -143,14 +143,17 @@ public sealed class Plugin : IDalamudPlugin
         last = pos;
         lastTime = now;
 
-        // After a jump at a spot, watch where you actually leave the ground.
-        if (pending != null)
-            UpdatePending(pos, now, step);
-
         // While learning, the plugin only watches you. It does not jump for you.
         if (IsLearning)
         {
             UpdateLearning(pos, step);
+            return;
+        }
+
+        // Experiment mode (/ledgejump reacttest). Everything else is paused while it runs.
+        if (reactTest)
+        {
+            UpdateReactTest(pos, now);
             return;
         }
 
@@ -199,6 +202,9 @@ public sealed class Plugin : IDalamudPlugin
 
         var territory = CurrentTerritory;
 
+        // The trigger window is at least ZoneRadius, and grows with your speed per frame
+        var reach = MathF.Max(config.ZoneRadius, step * config.AutoWiden);
+
         foreach (var spot in config.Spots)
         {
             if (spot.Territory != territory)
@@ -208,11 +214,8 @@ public sealed class Plugin : IDalamudPlugin
             var rz = spot.Z - pos.Z;
             var dist = MathF.Sqrt(rx * rx + rz * rz);
 
-            // Where this spot wants the jump pressed: the global jump point plus its own tuned offset
-            var lead = SpotLead(spot);
-
             // Near-miss bookkeeping: remember how close you got on this run
-            if (dist <= MathF.Max(lead, 0f) + WatchExtra + step)
+            if (dist <= config.ZoneRadius + WatchExtra + step)
             {
                 if (!closest.TryGetValue(spot, out var best) || dist < best)
                     closest[spot] = dist;
@@ -228,228 +231,24 @@ public sealed class Plugin : IDalamudPlugin
             if (!canJump)
                 continue;
 
-            // Which way is "toward the edge"? The platform's own line if you set a back end for this spot,
-            // otherwise the direction you are moving this frame.
-            var dirX = ux;
-            var dirZ = uz;
-            var stepAlong = step;
-            if (spot.HasBack)
-            {
-                var ax = spot.X - spot.BackX;
-                var az = spot.Z - spot.BackZ;
-                var len = MathF.Sqrt(ax * ax + az * az);
-                if (len > 0.1f)
-                {
-                    dirX = ax / len;
-                    dirZ = az / len;
-                    stepAlong = dx * dirX + dz * dirZ;   // how far you moved toward the edge this frame
-                }
-            }
+            var along = rx * ux + rz * uz;              // how far ahead the spot is (negative = behind you)
+            var side = MathF.Abs(rx * uz - rz * ux);    // how far off your line of travel it is
 
-            if (stepAlong < MinStep)
-                continue;   // not moving toward the edge
-
-            var along = rx * dirX + rz * dirZ;              // how far ahead the spot is (negative = past it)
-            var side = MathF.Abs(rx * dirZ - rz * dirX);    // how far off the line to the edge you are
-            var remaining = along - lead;                   // distance left until the jump point
-
-            // Press on the frame nearest the jump point: the first frame where less than half a step remains.
-            // (The old rule fired on the first frame within a window, which was always a little early.)
-            if (side <= config.SideLeeway && remaining <= stepAlong * 0.5f && remaining > -stepAlong)
+            if (side <= config.SideLeeway && along >= 0f && along <= reach)
             {
                 var accepted = DoJump();
                 cooldownUntil = now + CooldownSeconds;
                 jumpedThisVisit.Add(spot);
                 canJump = false;
 
-                if (accepted)
-                {
-                    pending = new PendingJump
-                    {
-                        Spot = spot,
-                        PressTime = now,
-                        PressAlong = along,
-                        Lead = lead,
-                        DirX = dirX,
-                        DirZ = dirZ,
-                        StandY = pos.Y,
-                        Speed = dt > 0.0001 ? stepAlong / (float)dt : 0f,
-                        LastLevelPos = pos,
-                    };
-                }
-
                 if (config.Debug)
                 {
-                    Print($"JUMP \"{spot.Name}\" | pressed {F(along)} before the spot (jump point {F(lead)}) | " +
-                          $"{F(side)} off to the side | moved {F(stepAlong)} per frame | {dt * 1000:0} ms per frame | " +
-                          $"accepted: {accepted}");
+                    Print($"JUMP \"{spot.Name}\" | {F(along)} before the spot | {F(side)} off to the side | " +
+                          $"moved {F(step)} per frame | {dt * 1000:0} ms per frame | accepted: {accepted}");
                 }
             }
         }
     }
-
-    // ------------------------------------------------------------------
-    // Jump timing: measure where you really left the ground, then nudge the spot
-    // ------------------------------------------------------------------
-    private const float TuneDeadband = 0.04f;   // errors smaller than this (yalms) are treated as noise
-
-    private sealed class PendingJump
-    {
-        public Spot Spot = null!;
-        public double PressTime;
-        public float PressAlong;
-        public float Lead;
-        public float DirX;
-        public float DirZ;
-        public float StandY;
-        public float Speed;
-        public int Frames;
-        public Vector3 LastLevelPos;
-    }
-
-    private PendingJump? pending;
-    private readonly List<string> calibrationLog = new();
-
-    internal IReadOnlyList<string> CalibrationLog => calibrationLog;
-
-    private float SpotLead(Spot spot) => Math.Clamp(config.ZoneRadius + spot.Adjust, -0.5f, 2.0f);
-
-    private static float AlongOf(PendingJump p, Vector3 v) =>
-        (p.Spot.X - v.X) * p.DirX + (p.Spot.Z - v.Z) * p.DirZ;
-
-    // Called every frame after a jump was pressed at a spot, until the outcome is known.
-    private void UpdatePending(Vector3 pos, double now, float step)
-    {
-        var p = pending;
-        if (p == null)
-            return;
-
-        // Teleport or loading screen: forget it.
-        if (step > MaxStep)
-        {
-            pending = null;
-            return;
-        }
-
-        p.Frames++;
-
-        // Left the ground: your height rose above where you were standing.
-        if (pos.Y > p.StandY + 0.03f)
-        {
-            // The takeoff happened somewhere between the last level frame and this one.
-            var along = (AlongOf(p, p.LastLevelPos) + AlongOf(p, pos)) * 0.5f;
-            FinishPending(p, true, along, (now - p.PressTime) * 1000.0);
-            return;
-        }
-
-        // Fell: dropped well below standing height without ever rising.
-        if (pos.Y < p.StandY - 0.3f)
-        {
-            FinishPending(p, false, AlongOf(p, p.LastLevelPos), (now - p.PressTime) * 1000.0);
-            return;
-        }
-
-        // Nothing conclusive after a second: give up on this one.
-        if (now - p.PressTime > 1.0)
-        {
-            pending = null;
-            return;
-        }
-
-        if (MathF.Abs(pos.Y - p.StandY) <= 0.03f)
-            p.LastLevelPos = pos;
-    }
-
-    private void FinishPending(PendingJump p, bool tookOff, float along, double ms)
-    {
-        pending = null;
-
-        var spot = p.Spot;
-        var before = spot.Adjust;
-        spot.Attempts++;
-
-        string outcome;
-        if (tookOff)
-        {
-            // 'along' = how far before the spot you actually left the ground. Positive = too early.
-            outcome = along >= 0f
-                ? $"left the ground {F(along)} before the edge"
-                : $"left the ground {F(-along)} past the edge";
-
-            if (config.AutoTune && MathF.Abs(along) > TuneDeadband)
-                spot.Adjust = Math.Clamp(spot.Adjust - along * config.TuneStrength, -0.5f, 1.5f);
-        }
-        else
-        {
-            outcome = $"fell off before the jump took effect (last stood {F(along)} from the spot)";
-
-            if (config.AutoTune)
-                spot.Adjust = Math.Clamp(spot.Adjust + config.FailStep, -0.5f, 1.5f);
-        }
-
-        var change = config.AutoTune ? $"offset {F(before)} -> {F(spot.Adjust)}" : "auto-tune off";
-        spot.LastOutcome = $"{outcome} ({change})";
-
-        var line = $"{DateTime.Now:HH:mm:ss} \"{spot.Name}\" #{spot.Attempts}: {outcome} | " +
-                   $"pressed {F(p.PressAlong)} before the spot (jump point {F(p.Lead)}) | " +
-                   $"{p.Speed:0.0} yalms/s | {ms:0} ms ({p.Frames} frames) until result | {change}";
-
-        calibrationLog.Add(line);
-        if (calibrationLog.Count > 40)
-            calibrationLog.RemoveAt(0);
-
-        Save();
-
-        if (config.Debug)
-            Print($"RESULT \"{spot.Name}\": {outcome} | {change}");
-    }
-
-    internal void SetBackHere(int index)
-    {
-        var player = objectTable.LocalPlayer;
-        if (player == null || index < 0 || index >= config.Spots.Count)
-            return;
-
-        var pos = player.Position;
-        var spot = config.Spots[index];
-        var length = MathF.Sqrt((spot.X - pos.X) * (spot.X - pos.X) + (spot.Z - pos.Z) * (spot.Z - pos.Z));
-
-        if (length < 0.2f)
-        {
-            Print("That is too close to the edge spot. Stand at the furthest-back point of the platform, then try again.");
-            return;
-        }
-
-        spot.HasBack = true;
-        spot.BackX = pos.X;
-        spot.BackZ = pos.Z;
-        Save();
-        Print($"Back end set for \"{spot.Name}\". The platform is {F(length)} yalms long.");
-    }
-
-    internal void ClearBack(int index)
-    {
-        if (index < 0 || index >= config.Spots.Count)
-            return;
-
-        config.Spots[index].HasBack = false;
-        Save();
-    }
-
-    internal void ResetTuning(int index)
-    {
-        if (index < 0 || index >= config.Spots.Count)
-            return;
-
-        var spot = config.Spots[index];
-        spot.Adjust = 0f;
-        spot.Attempts = 0;
-        spot.LastOutcome = "";
-        Save();
-        Print($"Timing offset reset for \"{spot.Name}\".");
-    }
-
-    internal void ClearCalibrationLog() => calibrationLog.Clear();
 
     // ------------------------------------------------------------------
     // The jump itself (same as /gaction jump)
@@ -575,6 +374,103 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // ------------------------------------------------------------------
+    // Experiment: does the game accept a jump just AFTER you walk off an edge?
+    // If it does, a jump could be triggered by the fall itself, with no coordinates at all.
+    // This only measures. It is off unless you type /ledgejump reacttest.
+    // ------------------------------------------------------------------
+    private bool reactTest;
+    private int reactDelay;       // frames to wait after the drop is noticed before pressing jump
+    private int reactState;       // 0 = waiting for you to walk off an edge, 1 = waiting out the delay, 2 = watching the result
+    private int reactStable;      // frames in a row at a steady height
+    private bool reactHadLevel;   // were you standing steadily just before the drop?
+    private float reactLevelY;
+    private float reactPrevY;
+    private float reactMinY;
+    private float reactPressY;
+    private int reactFrames;
+    private bool reactAccepted;
+    private double reactPressTime;
+    private double reactFallTime;
+
+    private void UpdateReactTest(Vector3 pos, double now)
+    {
+        var y = pos.Y;
+
+        switch (reactState)
+        {
+            case 0:
+                // Standing steadily?
+                if (MathF.Abs(y - reactPrevY) <= 0.004f)
+                {
+                    reactStable++;
+                    if (reactStable >= 4)
+                    {
+                        reactLevelY = y;
+                        reactHadLevel = true;
+                    }
+                }
+                else
+                {
+                    reactStable = 0;
+                }
+
+                // You jumped or climbed: that is not a walk-off.
+                if (y > reactLevelY + 0.02f)
+                    reactHadLevel = false;
+
+                // Walked off an edge: you were standing steadily and your height is now dropping.
+                if (reactHadLevel && y < reactLevelY - 0.01f && y < reactPrevY)
+                {
+                    reactHadLevel = false;
+                    reactState = 1;
+                    reactFrames = 0;
+                    reactMinY = y;
+                    reactFallTime = now;
+                }
+
+                break;
+
+            case 1:
+                reactFrames++;
+                reactMinY = MathF.Min(reactMinY, y);
+
+                if (reactFrames >= reactDelay)
+                {
+                    reactAccepted = DoJump();
+                    reactPressY = y;
+                    reactPressTime = now;
+                    reactFrames = 0;
+                    reactState = 2;
+                }
+
+                break;
+
+            case 2:
+                reactFrames++;
+                reactMinY = MathF.Min(reactMinY, y);
+
+                if (y > reactPrevY + 0.02f)
+                {
+                    Print($"REACT TEST: it JUMPED. Pressed {(reactPressTime - reactFallTime) * 1000:0} ms after the drop was noticed " +
+                          $"(already {F(reactLevelY - reactPressY)} below the edge). Game accepted the press: {reactAccepted}.");
+                    reactState = 0;
+                    reactStable = 0;
+                }
+                else if (y < reactPressY - 0.6f || now - reactPressTime > 0.8)
+                {
+                    Print($"REACT TEST: it did NOT jump. Pressed {(reactPressTime - reactFallTime) * 1000:0} ms after the drop was noticed " +
+                          $"(already {F(reactLevelY - reactPressY)} below the edge). Game accepted the press: {reactAccepted}.");
+                    reactState = 0;
+                    reactStable = 0;
+                }
+
+                break;
+        }
+
+        reactPrevY = y;
+    }
+
+    // ------------------------------------------------------------------
     // Things the options window calls
     // ------------------------------------------------------------------
     internal void TestJump() => Print($"Test jump sent. Game accepted it: {DoJump()}");
@@ -616,10 +512,8 @@ public sealed class Plugin : IDalamudPlugin
         spot.X = pos.X;
         spot.Y = pos.Y;
         spot.Z = pos.Z;
-        spot.Adjust = 0f;
         closest.Remove(spot);
         jumpedThisVisit.Remove(spot);
-        pending = null;
         Save();
         Print($"Spot \"{spot.Name}\" moved to x = {F(spot.X)}, z = {F(spot.Z)}.");
     }
@@ -633,7 +527,6 @@ public sealed class Plugin : IDalamudPlugin
         config.Spots.RemoveAt(index);
         closest.Remove(spot);
         jumpedThisVisit.Remove(spot);
-        pending = null;
         Save();
         Print($"Removed spot \"{spot.Name}\".");
     }
@@ -664,6 +557,25 @@ public sealed class Plugin : IDalamudPlugin
                     CancelLearning();
                 else
                     StartLearning();
+                break;
+
+            case "reacttest":
+                if (reactTest && parts.Length < 2)
+                {
+                    reactTest = false;
+                    Print("React test OFF. Everything is back to normal.");
+                }
+                else
+                {
+                    reactDelay = parts.Length > 1 && int.TryParse(parts[1], out var delay) ? Math.Clamp(delay, 0, 30) : 0;
+                    reactTest = true;
+                    reactState = 0;
+                    reactStable = 0;
+                    reactHadLevel = false;
+                    Print($"React test ON (jump pressed {reactDelay} frame(s) after the drop is noticed). " +
+                          "Walk off a ledge on foot, WITHOUT jumping. Other features are paused. " +
+                          "Type /ledgejump reacttest to turn it off.");
+                }
                 break;
 
             case "list":
@@ -767,6 +679,7 @@ public sealed class Plugin : IDalamudPlugin
         Print("/ledgejump                - open the options window");
         Print("/ledgejump add [name]     - record your position as a jump spot");
         Print("/ledgejump learn          - walk off an edge by hand and the plugin records it");
+        Print("/ledgejump reacttest [n]  - experiment: press jump n frames after you walk off an edge");
         Print("/ledgejump list           - show your spots");
         Print("/ledgejump remove <n>     - remove spot number n");
         Print("/ledgejump on | off | toggle");
