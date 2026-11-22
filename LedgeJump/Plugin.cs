@@ -179,6 +179,9 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (config.Debug)
+            UpdateJumpReport(pos, now);
+
         var wantAuto = config.Enabled && config.UseAutoEdge;
         var wantSpots = config.Enabled && config.UseSpots && config.Spots.Count > 0;
         var wantReadout = configWindow.IsOpen;
@@ -209,6 +212,9 @@ public sealed class Plugin : IDalamudPlugin
                 var accepted = DoJump();
                 cooldownUntil = now + CooldownSeconds;
                 canJump = false;
+
+                if (config.Debug)
+                    StartJumpReport(pos, ux, uz, edge.EdgeDistance, now);
 
                 if (config.Debug)
                 {
@@ -393,6 +399,80 @@ public sealed class Plugin : IDalamudPlugin
         learnBuffer.Clear();
         LearnStatus = $"Learned \"{spot.Name}\" at x = {F(spot.X)}, z = {F(spot.Z)}.";
         Print(LearnStatus + " Run at it to test. If it jumps too late, raise the jump point slider.");
+    }
+
+    // ------------------------------------------------------------------
+    // Report after each automatic jump: did you take off in time, and by how much?
+    // This only prints a line in chat (when chat messages are on). It never changes any setting.
+    // ------------------------------------------------------------------
+    private bool reportPending;
+    private float reportLx;
+    private float reportLz;
+    private float reportUx;
+    private float reportUz;
+    private float reportLevelY;
+    private float reportPrevY;
+    private float reportPrevX;
+    private float reportPrevZ;
+    private double reportStart;
+
+    private void StartJumpReport(Vector3 pos, float ux, float uz, float distanceToLastStandingPoint, double now)
+    {
+        reportPending = true;
+        reportLx = pos.X + ux * distanceToLastStandingPoint;
+        reportLz = pos.Z + uz * distanceToLastStandingPoint;
+        reportUx = ux;
+        reportUz = uz;
+        reportLevelY = pos.Y;
+        reportPrevY = pos.Y;
+        reportPrevX = pos.X;
+        reportPrevZ = pos.Z;
+        reportStart = now;
+    }
+
+    private void UpdateJumpReport(Vector3 pos, double now)
+    {
+        if (!reportPending)
+            return;
+
+        var y = pos.Y;
+
+        if (y > reportPrevY + 0.02f)
+        {
+            // Rising: the jump took effect. How far before the last standing point were you?
+            var before = (reportLx - reportPrevX) * reportUx + (reportLz - reportPrevZ) * reportUz;
+            var after = (reportLx - pos.X) * reportUx + (reportLz - pos.Z) * reportUz;
+            var mid = (before + after) * 0.5f;
+
+            string verdict;
+            if (mid > 0.2f)
+                verdict = "That is early. Lower the Jump point.";
+            else if (mid < 0.03f)
+                verdict = "Right at the limit. Raise the Jump point a little if some jumps fail.";
+            else
+                verdict = "Good.";
+
+            Print($"JUMP REPORT: you took off about {F(mid)} yalms before the last place you could stand " +
+                  $"(between {F(after)} and {F(before)}). {verdict}");
+            reportPending = false;
+        }
+        else if (y < reportLevelY - 0.02f && y < reportPrevY)
+        {
+            // Falling before any rise: the jump came too late.
+            var past = (pos.X - reportLx) * reportUx + (pos.Z - reportLz) * reportUz;
+            Print($"JUMP REPORT: you started falling before the jump took effect. You were about {F(past)} yalms " +
+                  "past the last place you could stand. Raise the Jump point.");
+            reportPending = false;
+        }
+        else if (now - reportStart > 1.0)
+        {
+            Print("JUMP REPORT: no takeoff was seen after the jump was pressed.");
+            reportPending = false;
+        }
+
+        reportPrevY = y;
+        reportPrevX = pos.X;
+        reportPrevZ = pos.Z;
     }
 
     // ------------------------------------------------------------------
@@ -726,6 +806,25 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             case "margin":
+                if (parts.Length > 1 && parts[1].ToLowerInvariant() == "apply")
+                {
+                    if (marginCount < 1 || HitboxRadius < 0.05f)
+                    {
+                        Print("Nothing to apply yet. Run /ledgejump margin, walk off a few ledges, then type /ledgejump margin apply.");
+                    }
+                    else
+                    {
+                        var scale = Math.Clamp(marginSum / marginCount / HitboxRadius, 0.5f, 1.5f);
+                        config.AutoMargin = true;
+                        config.MarginScale = scale;
+                        Save();
+                        Print($"Applied: the automatic margin is now {F(scale)} times your hitbox radius " +
+                              $"({F(scale * HitboxRadius)} yalms), from {marginCount} measurement(s).");
+                    }
+
+                    break;
+                }
+
                 if (marginTest)
                 {
                     marginTest = false;
@@ -873,6 +972,7 @@ public sealed class Plugin : IDalamudPlugin
         Print("/ledgejump                - open the options window");
         Print("/ledgejump add [name]     - record your position as a jump spot");
         Print("/ledgejump learn          - walk off an edge by hand and the plugin records it");
+        Print("/ledgejump margin apply  - after measuring, set the automatic margin from your measurements");
         Print("/ledgejump margin  - measure how far past the end of the collision you can keep standing (walk off ledges by hand)");
         Print("/ledgejump probe  - print what the game's collision sees under your feet (stand on the thing first)");
         Print("/ledgejump reacttest [n]  - experiment: press jump n frames after you walk off an edge (0 = same frame)");

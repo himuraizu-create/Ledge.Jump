@@ -79,7 +79,7 @@ public class Configuration : IPluginConfiguration
     public bool AutoMargin { get; set; } = true;
 
     // Fine-tune for the automatic margin: 1.0 = exactly your hitbox radius.
-    public float MarginScale { get; set; } = 1.0f;
+    public float MarginScale { get; set; } = 1.27f;
 
     // ---------------- Learn an edge by walking off it ----------------
 
