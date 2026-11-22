@@ -268,6 +268,14 @@ internal sealed class ConfigWindow : Window
             plugin.RunProbe();
         Tip("Prints in chat what each option sees directly under your feet. Stand on the thing first.");
 
+        if (plugin.ProbeLines.Count > 0)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(ImGuiColors.DalamudGrey, "Last probe (also printed in chat):");
+            foreach (var line in plugin.ProbeLines)
+                ImGui.TextWrapped(line);
+        }
+
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();

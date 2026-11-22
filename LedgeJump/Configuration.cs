@@ -18,7 +18,7 @@ public class Spot
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
 
     // ---------------- General ----------------
 
@@ -66,7 +66,7 @@ public class Configuration : IPluginConfiguration
     public bool IgnoreWalls { get; set; } = true;
 
     // Which collision filter the automatic edge detection uses (see Collision.Filters). 0 = Standard.
-    public int CollisionPreset { get; set; } = 0;
+    public int CollisionPreset { get; set; } = 4;
 
     // Use a body-sized sweep instead of a thin ray for the ground checks.
     public bool UseSweep { get; set; } = false;

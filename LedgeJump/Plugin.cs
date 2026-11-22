@@ -63,6 +63,9 @@ public sealed class Plugin : IDalamudPlugin
     // Size of your character's hitbox (the ring around you when you target yourself), read from the game every frame.
     internal float HitboxRadius { get; private set; }
 
+    // Result of the last Probe, shown in the options window.
+    internal List<string> ProbeLines { get; } = new();
+
     // How far past the end of the collision you can still stand, as currently configured.
     internal float EffectiveMargin => config.AutoMargin ? HitboxRadius * config.MarginScale : config.StandingMargin;
     internal bool HaveEdgeReading { get; private set; }
@@ -95,6 +98,14 @@ public sealed class Plugin : IDalamudPlugin
             config.MarginScale = 1.27f;
             config.UseSweep = false;
             config.Version = 2;
+            pluginInterface.SavePluginConfig(config);
+        }
+
+        // Version 3: the combined collision filter is the default.
+        if (config.Version < 3)
+        {
+            config.CollisionPreset = Collision.CombinedPreset;
+            config.Version = 3;
             pluginInterface.SavePluginConfig(config);
         }
         edgeDetector = new EdgeDetector(config);
@@ -730,10 +741,13 @@ public sealed class Plugin : IDalamudPlugin
 
         var pos = player.Position;
         Print($"PROBE at X {F(pos.X)}  Y {F(pos.Y)}  Z {F(pos.Z)}. Your hitbox radius is {F(HitboxRadius)}. Rays straight down through your feet, one line per filter:");
+        ProbeLines.Clear();
+        ProbeLines.Add($"Probe at X {F(pos.X)}  Y {F(pos.Y)}  Z {F(pos.Z)}. Hitbox radius {F(HitboxRadius)}.");
         foreach (var line in Collision.Probe(pos))
         {
             Print(line);
             log.Information(line);
+            ProbeLines.Add(line);
         }
     }
 

@@ -56,7 +56,15 @@ internal static class Collision
             MaterialMask = ulong.MaxValue,
             MaterialValue = 0,
         },
+        new CollisionFilter
+        {
+            Name = "Standard + Everything (recommended)",
+            Help = "Asks both Standard and Everything, and uses whichever finds something closer.\nSees ordinary ground the way Standard does, and the odd objects Everything finds.",
+        },
     };
+
+    // Index of the combined entry above.
+    public const int CombinedPreset = 4;
 
     // Which filter the automatic edge detection uses, and whether it sweeps a body-sized sphere instead of a thin ray.
     // Both are set from the settings every frame.
@@ -69,6 +77,36 @@ internal static class Collision
     public static unsafe bool Raycast(int preset, bool sweep, Vector3 origin, Vector3 direction, out RaycastHit hit,
         float maxDistance = 1000000f)
     {
+        // Combined: ask Standard and Everything, keep whichever hit is closer to where the ray started.
+        if (preset == CombinedPreset)
+        {
+            var okStandard = Raycast(0, sweep, origin, direction, out var hitStandard, maxDistance);
+            var okEverything = Raycast(3, sweep, origin, direction, out var hitEverything, maxDistance);
+
+            if (okStandard && okEverything)
+            {
+                hit = (hitStandard.Point - origin).LengthSquared() <= (hitEverything.Point - origin).LengthSquared()
+                    ? hitStandard
+                    : hitEverything;
+                return true;
+            }
+
+            if (okStandard)
+            {
+                hit = hitStandard;
+                return true;
+            }
+
+            if (okEverything)
+            {
+                hit = hitEverything;
+                return true;
+            }
+
+            hit = default;
+            return false;
+        }
+
         // Preset 0 goes through the game's own ready-made helpers, exactly as before.
         if (preset <= 0 || preset >= Filters.Length)
         {
@@ -111,7 +149,7 @@ internal static class Collision
 
         for (var i = 0; i < Filters.Length; i++)
         {
-            foreach (var sweep in new[] { false, true })
+            foreach (var sweep in new[] { false })
             {
                 string under;
                 if (Raycast(i, sweep, centre, down, out var hit))
