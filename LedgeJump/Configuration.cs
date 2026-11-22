@@ -12,6 +12,20 @@ public class Spot
     public float X { get; set; }
     public float Y { get; set; }
     public float Z { get; set; }
+
+    // Optional: the far end of the platform (the furthest back you can stand). With it, the plugin
+    // measures distance along the platform itself instead of along wherever you happen to be heading.
+    public bool HasBack { get; set; }
+    public float BackX { get; set; }
+    public float BackZ { get; set; }
+
+    // Per-spot timing offset in yalms, added to the global jump point.
+    // Positive = jump earlier, negative = jump later. The auto-tuner changes this after each jump.
+    public float Adjust { get; set; }
+
+    // Statistics shown in the window.
+    public int Attempts { get; set; }
+    public string LastOutcome { get; set; } = "";
 }
 
 [Serializable]
@@ -38,9 +52,18 @@ public class Configuration : IPluginConfiguration
     // How far to the left/right of the spot you can be and still count.
     public float SideLeeway { get; set; } = 0.8f;
 
-    // The trigger window is at least this many times the distance you move per frame,
-    // so a low frame rate cannot make you skip over the spot.
+    // No longer used (the jump now fires on the frame nearest the jump point). Kept so old saves still load.
     public float AutoWiden { get; set; } = 1.5f;
+
+    // After every jump at a recorded spot, measure where you actually left the ground and nudge that spot's
+    // timing offset so the next jump is closer to the edge.
+    public bool AutoTune { get; set; } = true;
+
+    // How much of the measured error to correct each time (0.1 = gentle, 1.0 = all of it at once).
+    public float TuneStrength { get; set; } = 0.5f;
+
+    // How far (yalms) to jump earlier after you fell off before the jump took effect.
+    public float FailStep { get; set; } = 0.08f;
 
     public List<Spot> Spots { get; set; } = new();
 

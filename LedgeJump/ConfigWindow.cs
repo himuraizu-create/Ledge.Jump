@@ -144,9 +144,25 @@ internal sealed class ConfigWindow : Window
         Slider("Sideways leeway", config.SideLeeway, 0.05f, 3f, v => config.SideLeeway = v,
             "How far to the left or right of the spot you can be and still count.\n" +
             "Bigger = more forgiving if you do not run perfectly straight.");
-        Slider("Frame-rate safety", config.AutoWiden, 1f, 3f, v => config.AutoWiden = v,
-            "Makes sure a fast run cannot skip over the spot between two frames.\n" +
-            "Leave at 1.5 unless it sometimes does not jump at sprint speed.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.Text("Auto-tune");
+        ImGui.TextWrapped(
+            "After every jump at a spot, the plugin measures where you actually left the ground. If you left too early it " +
+            "jumps a little later next time. If you fell off before the jump took effect, it jumps a little earlier. " +
+            "Run at the spot several times at the speed you will really use.");
+        ImGui.Spacing();
+
+        Check("Auto-tune jump timing", config.AutoTune, v => config.AutoTune = v,
+            "Adjusts each spot's timing offset after every jump. Turn off to tune by hand with the offset sliders below.");
+        Slider("Tuning strength", config.TuneStrength, 0.1f, 1f, v => config.TuneStrength = v,
+            "How much of the measured error to correct each time.\n" +
+            "Low = slow and steady. High = fast but can swing back and forth.");
+        Slider("Jump earlier after a fall (yalms)", config.FailStep, 0.02f, 0.3f, v => config.FailStep = v,
+            "How much earlier to jump after you fell off the edge before the jump took effect.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -188,12 +204,68 @@ internal sealed class ConfigWindow : Window
             ImGui.TextColored(ImGuiColors.DalamudGrey,
                 $"x {F(spot.X)}   z {F(spot.Z)}   zone {spot.Territory}{here}");
 
+            // Optional back end of the platform
+            if (ImGui.Button("Set back end here"))
+                plugin.SetBackHere(i);
+            Tip("Stand at the furthest-back point of the platform (the last place you can stand before falling off the\n" +
+                "other side), then click this. The plugin then measures along the platform itself, which is steadier\n" +
+                "than measuring along wherever you happen to be heading.");
+
+            if (spot.HasBack)
+            {
+                var bx = spot.X - spot.BackX;
+                var bz = spot.Z - spot.BackZ;
+                ImGui.SameLine();
+                if (ImGui.Button("Clear back end"))
+                    plugin.ClearBack(i);
+                ImGui.SameLine();
+                ImGui.TextColored(ImGuiColors.DalamudGrey, $"platform length {F(MathF.Sqrt(bx * bx + bz * bz))}");
+            }
+
+            // Timing offset, adjusted by the auto-tuner
+            Slider("Timing offset", spot.Adjust, -0.5f, 1.5f, v => spot.Adjust = v,
+                "Added to the global jump point for this spot only.\n" +
+                "Positive = jump earlier. Negative = jump later.\n" +
+                "The auto-tuner changes this after each jump. You can also set it by hand.");
+            ImGui.SameLine();
+            if (ImGui.Button("Reset tuning"))
+                plugin.ResetTuning(i);
+            Tip("Set the timing offset back to 0 and clear the attempt count.");
+
+            if (spot.Attempts > 0)
+            {
+                ImGui.TextColored(ImGuiColors.DalamudGrey, $"{spot.Attempts} jumps. Last: {spot.LastOutcome}");
+            }
+
+            ImGui.Spacing();
+            ImGui.Separator();
             ImGui.Spacing();
             ImGui.PopID();
         }
 
         if (removeAt >= 0)
             plugin.RemoveSpotAt(removeAt);
+
+        // Log of recent jumps, for checking how well the timing is converging
+        ImGui.Text("Recent jump results");
+        var log = plugin.CalibrationLog;
+        if (log.Count == 0)
+        {
+            ImGui.TextColored(ImGuiColors.DalamudGrey, "Nothing yet. Run at a spot.");
+        }
+        else
+        {
+            var first = Math.Max(0, log.Count - 12);
+            for (var i = first; i < log.Count; i++)
+                ImGui.TextWrapped(log[i]);
+
+            if (ImGui.Button("Copy log"))
+                ImGui.SetClipboardText(string.Join("\n", log));
+            Tip("Copies the whole log so you can paste it somewhere.");
+            ImGui.SameLine();
+            if (ImGui.Button("Clear log"))
+                plugin.ClearCalibrationLog();
+        }
     }
 
     // ------------------------------------------------------------------
