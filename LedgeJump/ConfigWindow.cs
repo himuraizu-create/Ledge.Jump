@@ -263,10 +263,6 @@ internal sealed class ConfigWindow : Window
             Tip(Collision.Filters[i].Help);
         }
 
-        Check("Body-sized check (sphere sweep)", config.UseSweep, v => config.UseSweep = v,
-            "Checks the ground with a small ball instead of a thin ray, so it also feels ground slightly to the side,\n" +
-            "a bit like your body does. Try it if you can stand where the collision seems to have ended.");
-
         ImGui.Spacing();
         if (ImGui.Button("Probe what is under me"))
             plugin.RunProbe();
@@ -289,7 +285,12 @@ internal sealed class ConfigWindow : Window
         if (!r.Grounded)
         {
             ImGui.TextColored(ImGuiColors.DalamudRed,
-                "The game's collision cannot see ground under you here (or you are in the air).");
+                "The game's collision cannot see ground under you or within your body's reach here (or you are in the air).");
+            if (float.IsNaN(r.NearestGroundBelow))
+                ImGui.Text("Closest ground found: none at all. This filter cannot see this object. Try the other filters above.");
+            else
+                ImGui.Text($"Closest ground found: {F(MathF.Abs(r.NearestGroundBelow))} yalms " +
+                           (r.NearestGroundBelow >= 0f ? "below" : "above") + " you.");
             ImGui.TextWrapped("If you are standing on a normal platform and keep seeing this, the platform is not part of the " +
                               "collision this feature can read. Use \"Learn an edge\" on the Jump Spots tab for it instead. " +
                               "That works from your own movement and does not need the collision data.");

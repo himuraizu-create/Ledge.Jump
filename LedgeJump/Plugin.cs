@@ -87,6 +87,16 @@ public sealed class Plugin : IDalamudPlugin
         this.log = log;
 
         config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+
+        // Settings from older versions: use the measured standing zone, and switch off the sphere sweep,
+        // which the body-shaped check has replaced.
+        if (config.Version < 2)
+        {
+            config.MarginScale = 1.27f;
+            config.UseSweep = false;
+            config.Version = 2;
+            pluginInterface.SavePluginConfig(config);
+        }
         edgeDetector = new EdgeDetector(config);
 
         configWindow = new ConfigWindow(this, config, Save);
@@ -222,6 +232,12 @@ public sealed class Plugin : IDalamudPlugin
                           $"moved {F(step)} per frame | {dt * 1000:0} ms per frame | accepted: {accepted}");
                 }
             }
+        }
+        else if (wantReadout)
+        {
+            // Standing still with the window open: still show whether the game counts you as standing on something.
+            LastEdge = edgeDetector.Evaluate(pos, 0f, 0f, EffectiveMargin);
+            HaveEdgeReading = true;
         }
 
         // -------- Recorded spots --------

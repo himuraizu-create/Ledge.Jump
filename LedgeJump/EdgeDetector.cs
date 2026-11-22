@@ -16,6 +16,10 @@ internal struct EdgeResult
 
     // Is a wall in the way before that edge? (then it is not a ledge, so no jump)
     public bool WallAhead;
+
+    // Only filled in when Grounded is false: height difference to the closest ground the checks found
+    // (positive = ground is below you). NaN = no collision was found at all.
+    public float NearestGroundBelow;
 }
 
 // Looks at the game's real collision geometry by shooting invisible rays at it.
@@ -105,20 +109,34 @@ internal sealed class EdgeDetector
         return false;
     }
 
+    // How much bigger than the measured standing zone the "am I standing right now?" check is. Your real standing
+    // zone varies by about a frame of movement (0.60 to 0.68 was measured), and being a little generous here is harmless.
+    private const float GroundSlack = 0.08f;
+
     // The height of the ground you are standing on: directly under you if there is some, otherwise the closest
     // ground under your body's circle (you are floating off the side of something).
-    private bool FindGroundHeight(Vector3 pos, float radius, out float groundY)
+    // nearestBelow is only meaningful when this returns false.
+    private bool FindGroundHeight(Vector3 pos, float radius, out float groundY, out float nearestBelow)
     {
-        if (CastDown(pos.X, pos.Y, pos.Z, out groundY) && MathF.Abs(groundY - pos.Y) <= RayLift)
-            return true;
+        nearestBelow = float.NaN;
+
+        var centreHit = CastDown(pos.X, pos.Y, pos.Z, out groundY);
+        if (centreHit)
+        {
+            if (MathF.Abs(groundY - pos.Y) <= RayLift)
+                return true;
+
+            nearestBelow = pos.Y - groundY;
+        }
 
         if (radius >= MinDiskRadius)
         {
+            var reach = radius + GroundSlack;
             var bestDiff = float.MaxValue;
             var best = 0f;
             foreach (var (fraction, count) in Rings)
             {
-                var r = radius * fraction;
+                var r = reach * fraction;
                 for (var k = 0; k < count; k++)
                 {
                     var a = k * 2f * MathF.PI / count;
@@ -130,6 +148,9 @@ internal sealed class EdgeDetector
                             bestDiff = diff;
                             best = y;
                         }
+
+                        if (float.IsNaN(nearestBelow) || diff < MathF.Abs(nearestBelow))
+                            nearestBelow = pos.Y - y;
                     }
                 }
             }
@@ -151,11 +172,14 @@ internal sealed class EdgeDetector
     {
         var result = new EdgeResult();
         Collision.Preset = config.CollisionPreset;
-        Collision.Sweep = config.UseSweep;
+        Collision.Sweep = false;
 
         // What are you standing on? If nothing is under you or your body, you are in the air (or in a spot with no collision).
-        if (!FindGroundHeight(pos, radius, out var groundY))
+        if (!FindGroundHeight(pos, radius, out var groundY, out var nearestBelow))
+        {
+            result.NearestGroundBelow = nearestBelow;
             return result;
+        }
 
         result.Grounded = true;
         result.GroundY = groundY;
